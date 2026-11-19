@@ -1,4 +1,4 @@
-package com.example.arifa
+package com.arifa.app.arifa
 
 import android.accessibilityservice.AccessibilityService
 import android.content.ClipData

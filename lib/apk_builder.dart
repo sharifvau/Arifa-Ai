@@ -1,7 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
-import 'package:archive/archive.dart';
 import 'package:path_provider/path_provider.dart';
 
 import 'arifa_brain.dart';
@@ -575,15 +575,89 @@ class MainActivity : FlutterActivity()
     final entries = _projectFiles(app, buildMode: buildMode);
     await _writeProject(app, outDir, buildMode: buildMode);
 
-    final archive = Archive();
-    for (final file in entries) {
-      final bytes = utf8.encode(file.content);
-      archive.addFile(ArchiveFile(file.path, bytes.length, bytes));
-    }
-    final zipBytes = ZipEncoder().encode(archive);
+    // Minimal stored (uncompressed) ZIP writer. The `archive` package is not
+    // part of the allowed Android-only dependency set, so the format is
+    // emitted directly: local headers + central directory + EOCD.
     final zip = File('${dir.path}/arifa_projects/$safeName.zip');
-    zip.writeAsBytesSync(zipBytes);
+    final sink = zip.openWrite();
+    final central = BytesBuilder(copy: false);
+    final now = DateTime.now();
+    final dosTime = (now.hour << 11) | (now.minute << 5) | (now.second ~/ 2);
+    final dosDate = ((now.year - 1980) << 9) | (now.month << 5) | now.day;
+    var offset = 0;
+
+    for (final file in entries) {
+      final name = utf8.encode(_safePath(file.path));
+      final bytes = utf8.encode(file.content);
+      final crc = _crc32(bytes);
+
+      final local = ByteData(30)
+        ..setUint32(0, 0x04034b50, Endian.little) // local file signature
+        ..setUint16(4, 20, Endian.little) // version needed
+        ..setUint16(6, 0x0800, Endian.little) // UTF-8 filenames
+        ..setUint16(8, 0, Endian.little) // stored, no compression
+        ..setUint16(10, dosTime, Endian.little)
+        ..setUint16(12, dosDate, Endian.little)
+        ..setUint32(14, crc, Endian.little)
+        ..setUint32(18, bytes.length, Endian.little)
+        ..setUint32(22, bytes.length, Endian.little)
+        ..setUint16(26, name.length, Endian.little)
+        ..setUint16(28, 0, Endian.little);
+      sink.add(local.buffer.asUint8List());
+      sink.add(name);
+      sink.add(bytes);
+
+      final cd = ByteData(46)
+        ..setUint32(0, 0x02014b50, Endian.little) // central dir signature
+        ..setUint16(4, 20, Endian.little) // version made by
+        ..setUint16(6, 20, Endian.little) // version needed
+        ..setUint16(8, 0x0800, Endian.little) // UTF-8 filenames
+        ..setUint16(10, 0, Endian.little) // stored
+        ..setUint16(12, dosTime, Endian.little)
+        ..setUint16(14, dosDate, Endian.little)
+        ..setUint32(16, crc, Endian.little)
+        ..setUint32(20, bytes.length, Endian.little)
+        ..setUint32(24, bytes.length, Endian.little)
+        ..setUint16(28, name.length, Endian.little)
+        ..setUint16(30, 0, Endian.little) // extra length
+        ..setUint16(32, 0, Endian.little) // comment length
+        ..setUint16(34, 0, Endian.little) // disk start
+        ..setUint16(36, 0, Endian.little) // internal attrs
+        ..setUint32(38, 0, Endian.little) // external attrs
+        ..setUint32(42, offset, Endian.little);
+      central.add(cd.buffer.asUint8List());
+      central.add(name);
+
+      offset += 30 + name.length + bytes.length;
+    }
+
+    final centralBytes = central.takeBytes();
+    sink.add(centralBytes);
+    final end = ByteData(22)
+      ..setUint32(0, 0x06054b50, Endian.little) // EOCD signature
+      ..setUint16(4, 0, Endian.little)
+      ..setUint16(6, 0, Endian.little)
+      ..setUint16(8, entries.length, Endian.little)
+      ..setUint16(10, entries.length, Endian.little)
+      ..setUint32(12, centralBytes.length, Endian.little)
+      ..setUint32(16, offset, Endian.little)
+      ..setUint16(20, 0, Endian.little);
+    sink.add(end.buffer.asUint8List());
+    await sink.flush();
+    await sink.close();
     return zip.path;
+  }
+
+  static int _crc32(List<int> bytes) {
+    var crc = 0xFFFFFFFF;
+    for (final byte in bytes) {
+      crc ^= byte;
+      for (var i = 0; i < 8; i++) {
+        final mask = (crc & 1) != 0 ? 0xEDB88320 : 0;
+        crc = (crc >> 1) ^ mask;
+      }
+    }
+    return (crc ^ 0xFFFFFFFF) & 0xFFFFFFFF;
   }
 
   String _xmlEscape(String s) => s

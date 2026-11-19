@@ -1,12 +1,11 @@
 name: arifa
 description: "ARIFA - a cute, friendly Bangladeshi AI assistant for Emon Bhai."
-publish_to: "none"
+publish_to: none
 version: 1.0.0+1
 
-# Flutter 3.24.0 ships Dart 3.5.0 and generates Gradle 7.6.3 / AGP 7.3.0 /
-# Kotlin 1.7.10 / compileSdk 34. Every pin below is from that era.
-# Newer plugins force AGP 8.6+/Kotlin 2.x/compileSdk 35 + core library
-# desugaring and break the Android Gradle compile even though pub get succeeds.
+# Flutter 3.24.0 stable ships Dart 3.5.0. Every direct pin below is from that
+# era, so no package drags in AGP 8.6+/Kotlin 2.x/compileSdk 35 or any
+# Windows-only implementation. No API key or model version is bundled here.
 environment:
   sdk: ">=3.5.0 <4.0.0"
 
@@ -14,45 +13,28 @@ dependencies:
   flutter:
     sdk: flutter
 
-  # Core — exact pins keep CI reproducible on Flutter 3.24.0.
+  # 8.1.0 is the last line whose federated Windows stub needs no Windows FFI shim.
+  flutter_secure_storage: 8.1.0
   http: 1.2.2
-  archive: 4.4.0
-  path_provider: 2.1.4
-  share_plus: 10.0.2
-  cross_file: 0.3.4+2
-  file_picker: 8.0.0
-
-  # Encrypted on-device settings. No key is stored in source code or assets.
-  flutter_secure_storage: 9.2.2
-
-  # Voice
-  flutter_tts: 4.2.0
+  shared_preferences: 2.2.3
   speech_to_text: 7.0.0
-
-  # Background + notifications. 17.2.2 avoids flutter_local_notifications_windows
-  # and the Dart 3.8 / xml 6.6+ requirement brought by the 19.x line.
-  flutter_local_notifications: 17.2.2
+  flutter_tts: 4.2.0
   permission_handler: 11.3.0
+  path_provider: 2.1.4
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
-  flutter_lints: 5.0.0
+  # 4.x is the last flutter_lints line that supports Dart 3.5 / Flutter 3.24.
+  flutter_lints: 4.0.0
 
-# Direct pins above stay untouched. These two *transitive* Android plugins
-# climbed to AGP 8.5.x (one to compileSdk 35) while this repo deliberately
-# pins AGP 8.3.1 / compileSdk 34 in android/settings.gradle and
-# android/app/build.gradle. Freeze the last releases that still use AGP <=8.3
-# and compileSdk 34; both satisfy the version ranges of file_picker 8.0.0
-# (^2.0.17) and path_provider 2.1.4 (^2.2.0) and Dart 3.5 / Flutter 3.24.
+# These are NOT extra features. They only freeze two Android-only transitive
+# plugins so they cannot climb to AGP 8.5+/compileSdk 35 behind our back.
 dependency_overrides:
-  # 2.0.22+ hard-code AGP 8.5.1; 2.0.26 uses compileSdk 35.
   flutter_plugin_android_lifecycle: 2.0.21
-  # 2.2.7+ hard-code AGP 8.5.0; 2.2.6 is the last build on AGP 7.3.1 / SDK 34.
   path_provider_android: 2.2.6
 
 flutter:
   uses-material-design: true
   assets:
-    # Editable seed only. The live list is saved in secure storage.
     - models.json

@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
 
-import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import 'arifa_brain.dart';
@@ -80,13 +79,11 @@ class AutoReplyService {
   final NotificationListener _listener = NotificationListener();
   late final WhatsAppService _whatsapp;
   ArifaBrain? _brain;
-  FlutterLocalNotificationsPlugin? _notifications;
 
   final FlutterSecureStorage _storage = const FlutterSecureStorage(
     aOptions: AndroidOptions(),
   );
   static const _logKey = 'whatsapp_reply_log_v1';
-  static const _channelId = 'arifa_channel';
 
   /// Hard budget for deciding a reply. A slow cloud brain never pushes the
   /// whole incoming -> sent flow past ~2s.
@@ -126,12 +123,6 @@ class AutoReplyService {
 
     _whatsapp = WhatsAppService(listener: _listener);
     _brain = ArifaBrain();
-    _notifications = FlutterLocalNotificationsPlugin();
-    await _notifications!.initialize(
-      const InitializationSettings(
-        android: AndroidInitializationSettings('@mipmap/ic_launcher'),
-      ),
-    );
     await _loadLogs();
 
     // Subscribe before init(): NotificationListener.init() replays anything
@@ -302,23 +293,14 @@ class AutoReplyService {
     }
   }
 
+  /// No notification plugin is bundled in the minimal Android-only build.
+  /// The important-contact alert stays on the in-app status stream instead.
   Future<void> _notifyImportant(IncomingWhatsAppMessage msg) async {
-    await _notifications!.show(
-      DateTime.now().millisecondsSinceEpoch ~/ 1000 % 2147483647,
-      'Emon Bhai, ${msg.contact} message dise, dekhen',
-      msg.message.length > 90
-          ? '${msg.message.substring(0, 90)}…'
-          : msg.message,
-      const NotificationDetails(
-        android: AndroidNotificationDetails(
-          _channelId,
-          'ARIFA',
-          channelDescription: 'ARIFA build and WhatsApp alerts',
-          importance: Importance.high,
-          priority: Priority.high,
-        ),
-      ),
-    );
+    if (_statusCtrl.isClosed) return;
+    final preview = msg.message.length > 90
+        ? '${msg.message.substring(0, 90)}…'
+        : msg.message;
+    _statusCtrl.add('Important — ${msg.contact}: $preview');
   }
 
   Future<_ReplyDecision> _decideReply(

@@ -1,4 +1,4 @@
-package com.example.arifa
+package com.arifa.app.arifa
 
 import android.Manifest
 import android.app.Activity

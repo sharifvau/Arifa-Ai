@@ -2,11 +2,10 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
-import 'package:share_plus/share_plus.dart';
 
 import 'auto_reply_service.dart';
 import 'config.dart';
@@ -490,22 +489,60 @@ class _SettingsScreenState extends State<SettingsScreen> {
       file.writeAsStringSync(
         const JsonEncoder.withIndent('  ').convert(catalog.toJson()),
       );
-      await Share.shareXFiles([XFile(file.path)], subject: 'ARIFA models.json');
+      await Clipboard.setData(ClipboardData(text: file.path));
+      _snack('Export hoyeche Emon Bhai ♥ Path copy hoyeche: ${file.path}');
     } catch (e) {
       _snack('Export fail: $e');
     }
   }
 
+  /// File picker/share plugins are intentionally absent from the minimal
+  /// Android-only dependency set. Paste the catalog JSON directly instead.
   Future<void> _importJson() async {
+    final pasted = TextEditingController();
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF06182B),
+        title: const Text(
+          'Paste models.json',
+          style: TextStyle(color: Colors.cyanAccent),
+        ),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: TextField(
+            controller: pasted,
+            maxLines: 12,
+            style: const TextStyle(
+              color: Colors.white,
+              fontFamily: 'monospace',
+              fontSize: 11,
+            ),
+            decoration: const InputDecoration(
+              hintText: 'models.json content here...',
+              hintStyle: TextStyle(color: Colors.white24),
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: FilledButton.styleFrom(backgroundColor: Colors.cyanAccent),
+            child: const Text('Import', style: TextStyle(color: Colors.black)),
+          ),
+        ],
+      ),
+    );
+    final raw = pasted.text;
+    pasted.dispose();
+    if (ok != true || raw.trim().isEmpty) return;
     try {
-      final result = await FilePicker.platform.pickFiles(
-        type: FileType.custom,
-        allowedExtensions: const ['json'],
-      );
-      final path = result?.files.singleOrNull?.path;
-      if (path == null) return;
-      final raw = await File(path).readAsString();
       await SettingsService.instance.importCatalog(raw);
+      if (!mounted) return;
       setState(() {});
       _snack('models.json ইমপোর্ট হয়েছে Emon Bhai ♥');
     } catch (e) {

@@ -1,4 +1,4 @@
-package com.example.arifa
+package com.arifa.app.arifa
 
 import android.app.Notification
 import android.app.PendingIntent

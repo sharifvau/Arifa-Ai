@@ -2,9 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:share_plus/share_plus.dart';
 
 import 'apk_builder.dart';
 import 'arifa_avatar.dart';
@@ -65,7 +63,6 @@ class _ArifaHomeState extends State<ArifaHome>
   late final PhoneControl _phone;
   late final ScreenService _screen;
   late final ApkBuilder _builder;
-  late final FlutterLocalNotificationsPlugin _notifications;
   late final AnimationController _pulse;
 
   final TextEditingController _input = TextEditingController();
@@ -91,8 +88,6 @@ class _ArifaHomeState extends State<ArifaHome>
   String _status = 'শুরু হচ্ছে...';
   GeneratedApp? _lastApp;
 
-  static const _channelId = 'arifa_channel';
-
   @override
   void initState() {
     super.initState();
@@ -107,7 +102,6 @@ class _ArifaHomeState extends State<ArifaHome>
     _phone = PhoneControl();
     _screen = ScreenService(brain: _brain, native: _native);
     _builder = ApkBuilder(brain: _brain);
-    _notifications = FlutterLocalNotificationsPlugin();
 
     _boot();
   }
@@ -115,7 +109,6 @@ class _ArifaHomeState extends State<ArifaHome>
   Future<void> _boot() async {
     try {
       await _voice.init();
-      await _initNotifications();
       await _askPermissions();
 
       _speakingSub = _voice.onSpeakingChanged.listen((v) {
@@ -256,13 +249,6 @@ class _ArifaHomeState extends State<ArifaHome>
         autoReset: const Duration(seconds: 2),
       );
     }
-  }
-
-  Future<void> _initNotifications() async {
-    const android = AndroidInitializationSettings('@mipmap/ic_launcher');
-    await _notifications.initialize(
-      const InitializationSettings(android: android),
-    );
   }
 
   Future<void> _askPermissions() async {
@@ -501,7 +487,7 @@ class _ArifaHomeState extends State<ArifaHome>
           effect: AvatarEffect.celebrate,
           autoReset: const Duration(seconds: 4),
         );
-        await Share.shareXFiles([XFile(zip)], subject: 'ARIFA fixed source');
+        await _offerFile('ARIFA fixed source', zip);
       } catch (e) {
         _addArifa('Auto-fix ব্যর্থ: $e');
         _setMood(
@@ -544,25 +530,22 @@ class _ArifaHomeState extends State<ArifaHome>
       autoReset: const Duration(seconds: 4),
     );
     await _voice.speak('Hoye geche Emon Bhai!');
-    await _notifications.show(
-      1001,
-      built ? 'ARIFA - APK Ready' : 'ARIFA - Source Ready',
+    _addArifa(
       built
-          ? 'Hoye geche Emon Bhai, APK ready ♥'
-          : 'Hoye geche Emon Bhai, source zip ready ♥',
-      const NotificationDetails(
-        android: AndroidNotificationDetails(
-          _channelId,
-          'ARIFA',
-          channelDescription: 'ARIFA build notifications',
-          importance: Importance.high,
-          priority: Priority.high,
-        ),
-      ),
+          ? 'APK ready ♥ — file path upore dewa ache Emon Bhai.'
+          : 'Source zip ready ♥ — file path upore dewa ache Emon Bhai.',
     );
-    await Share.shareXFiles([
-      XFile(built ? result.apkPath! : result.zipPath),
-    ], subject: built ? 'ARIFA APK' : 'ARIFA generated Flutter project');
+    await _offerFile(
+      built ? 'ARIFA APK' : 'ARIFA generated Flutter project',
+      built ? result.apkPath! : result.zipPath,
+    );
+  }
+
+  /// No share plugin is bundled in the minimal Android-only build. Keep the
+  /// result discoverable in chat and copy the exact path for Emon Bhai.
+  Future<void> _offerFile(String subject, String path) async {
+    await Clipboard.setData(ClipboardData(text: path));
+    _addArifa('$subject — path copy hoyeche Emon Bhai ♥\n$path');
   }
 
   Future<void> _handleWhatsApp(String text) async {

@@ -17,28 +17,15 @@ if (flutterVersionCode == null) flutterVersionCode = "1"
 def flutterVersionName = localProperties.getProperty("flutter.versionName")
 if (flutterVersionName == null) flutterVersionName = "1.0"
 
-// Optional release signing. CI writes android/key.properties only when the
-// keystore secrets are configured; local/debug builds have no such file.
-def keystoreProperties = new Properties()
-def keystorePropertiesFile = rootProject.file("key.properties")
-if (keystorePropertiesFile.exists()) {
-    keystorePropertiesFile.withReader("UTF-8") { reader -> keystoreProperties.load(reader) }
-}
-def hasReleaseKeystore = keystorePropertiesFile.exists() &&
-        keystoreProperties.getProperty("storeFile") != null &&
-        keystoreProperties.getProperty("storePassword") != null &&
-        keystoreProperties.getProperty("keyAlias") != null &&
-        keystoreProperties.getProperty("keyPassword") != null
-
 android {
-    namespace = "com.example.arifa"
+    // Matches: flutter create --org com.arifa.app --project-name arifa
+    namespace = "com.arifa.app.arifa"
     compileSdk = 34
     ndkVersion = "23.1.7779620"
 
     compileOptions {
-        // flutter_local_notifications enables desugaring in its own module;
-        // enable it here too so the app module uses the same toolchain.
-        coreLibraryDesugaringEnabled true
+        // Java 17 is the JDK used by CI; bytecode stays compatible with the
+        // Flutter 3.24 / AGP 7.3 toolchain.
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
@@ -48,37 +35,20 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.example.arifa"
+        applicationId = "com.arifa.app.arifa"
         minSdk = 21
         targetSdk = 34
         versionCode = flutterVersionCode.toInteger()
         versionName = flutterVersionName
     }
 
-    signingConfigs {
-        release {
-            if (hasReleaseKeystore) {
-                storeFile rootProject.file(keystoreProperties.getProperty("storeFile"))
-                storePassword keystoreProperties.getProperty("storePassword")
-                keyAlias keystoreProperties.getProperty("keyAlias")
-                keyPassword keystoreProperties.getProperty("keyPassword")
-            }
-        }
-    }
-
     buildTypes {
+        // Debug is the only CI target now. Release still builds locally with
+        // the debug key when scripts/build_apk.sh is used.
         release {
-            // Real release key when android/key.properties exists, otherwise
-            // debug keys so CI/local builds without secrets still succeed.
-            signingConfig = hasReleaseKeystore
-                    ? signingConfigs.release
-                    : signingConfigs.debug
+            signingConfig = signingConfigs.debug
         }
     }
-}
-
-dependencies {
-    coreLibraryDesugaring "com.android.tools:desugar_jdk_libs:2.0.4"
 }
 
 flutter {

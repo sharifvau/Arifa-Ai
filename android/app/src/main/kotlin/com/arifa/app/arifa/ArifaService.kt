@@ -1,4 +1,4 @@
-package com.example.arifa
+package com.arifa.app.arifa
 
 import android.Manifest
 import android.app.Notification
@@ -38,7 +38,7 @@ import java.nio.ByteBuffer
 class ArifaService : Service() {
 
     companion object {
-        const val ACTION_CAPTURE = "com.example.arifa.CAPTURE"
+        const val ACTION_CAPTURE = "com.arifa.app.arifa.CAPTURE"
         const val CHANNEL_ID = "arifa_foreground"
         const val NOTIFICATION_ID = 1002
         const val SCREEN_CAPTURE_FILE = "arifa_screen.jpg"

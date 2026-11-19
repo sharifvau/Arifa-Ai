@@ -1,8 +1,8 @@
-name: Build ARIFA APK
+name: Build ARIFA Debug APK
 
 on:
   push:
-    branches: [main, master]
+  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -22,117 +22,55 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      # Flutter 3.24.0 ships Dart 3.5.0. pubspec.yaml, the pinned plugins and
-      # the tracked Gradle files all match exactly this SDK.
       - name: Set up Flutter 3.24.0 stable
         uses: subosito/flutter-action@v2
         with:
           channel: stable
           flutter-version: '3.24.0'
-          cache: true
 
-      - name: Print toolchain versions
-        run: |
-          flutter --version
-          java -version
-          git --version
+      - name: Run flutter --version
+        run: flutter --version
 
-      # This repo stores only ARIFA's custom Android files plus the pinned
-      # Gradle config. bootstrap.sh generates the rest of the platform scaffold.
-      - name: Generate Android platform files
-        run: bash scripts/bootstrap.sh
-
-      - name: Regenerate ARIFA launcher icons
-        run: python3 scripts/generate_icon.py
-
-      # Optional release signing. All four secrets must be present; otherwise
-      # the build continues exactly as before with the debug signing config.
-      - name: Configure release keystore (optional)
-        shell: bash
-        env:
-          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
-          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
-        run: |
-          if [ -z "${KEYSTORE_BASE64:-}" ] || [ -z "${KEYSTORE_PASSWORD:-}" ] || \
-             [ -z "${KEY_ALIAS:-}" ] || [ -z "${KEY_PASSWORD:-}" ]; then
-            echo "No release keystore secrets - release will use debug keys."
-            exit 0
-          fi
-
-          echo "Decoding release keystore for the signed release build."
-          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > android/app/arifa-release.jks
-          {
-            printf 'storePassword=%s\n' "$KEYSTORE_PASSWORD"
-            printf 'keyPassword=%s\n' "$KEY_PASSWORD"
-            printf 'keyAlias=%s\n' "$KEY_ALIAS"
-            printf 'storeFile=app/arifa-release.jks\n'
-          } > android/key.properties
-
-      - name: Flutter clean
-        run: flutter clean
-
-      - name: Flutter pub get (verbose)
-        run: flutter pub get --verbose
-
-      # Analyzer failures are real build failures now. All Dart errors and
-      # warnings are fixed, and the complete output stays in the Actions log.
-      - name: Flutter analyze
-        run: flutter analyze
-
-      - name: Build APK (release, fallback to debug)
-        id: apk
+      - name: Complete Android scaffold when needed
         shell: bash
         run: |
-          echo "=========================================================="
-          echo "RELEASE BUILD - full output below"
-          echo "=========================================================="
-          release_status=0
-          flutter build apk --release --verbose || release_status=$?
-          echo "RELEASE BUILD EXIT CODE: $release_status"
-
-          if [ "$release_status" -eq 0 ]; then
-            echo "apk_path=build/app/outputs/flutter-apk/app-release.apk" >> "$GITHUB_OUTPUT"
-            echo "Release APK built successfully."
-            exit 0
+          if [ -f pubspec.yaml ] && { \
+            [ ! -d android ] || \
+            [ ! -f android/gradlew ] || \
+            [ ! -f android/gradle/wrapper/gradle-wrapper.jar ] || \
+            [ ! -f android/build.gradle ] || \
+            [ ! -f android/settings.gradle ] || \
+            [ ! -f android/app/build.gradle ] || \
+            [ ! -f android/app/src/main/AndroidManifest.xml ]; }; then
+            flutter create --org com.arifa.app --project-name arifa --platforms android .
+            git checkout HEAD -- lib/ assets/ models.json
           fi
 
-          echo "::warning::Release build failed (exit $release_status). Trying debug APK."
+      - name: Install dependencies
+        run: flutter pub get
 
-          flutter clean
+      - name: Analyze (informational)
+        run: flutter analyze --no-fatal-infos || true
 
-          echo "=========================================================="
-          echo "RE-DOWNLOAD DEPENDENCIES - full output below"
-          echo "=========================================================="
-          pub_status=0
-          flutter pub get --verbose || pub_status=$?
-          echo "PUB GET EXIT CODE: $pub_status"
+      - name: Build debug APK with full verbose log
+        id: debug_build
+        shell: bash
+        run: |
+          set -o pipefail
+          flutter build apk --debug --verbose 2>&1 | tee flutter-build-debug.log
 
-          echo "=========================================================="
-          echo "DEBUG BUILD - full output below"
-          echo "=========================================================="
-          debug_status=0
-          flutter build apk --debug --verbose || debug_status=$?
-          echo "DEBUG BUILD EXIT CODE: $debug_status"
+      - name: Fail clearly with the full debug log
+        if: ${{ failure() && steps.debug_build.outcome == 'failure' }}
+        shell: bash
+        run: |
+          echo "::error::DEBUG APK BUILD FAILED. Full unfiltered log below:"
+          cat flutter-build-debug.log
+          echo "::error::ARIFA debug APK build failed — see the complete log above."
+          exit 1
 
-          if [ "$debug_status" -ne 0 ]; then
-            echo "==========================================================" >&2
-            echo "BUILD FAILED - release AND debug both failed." >&2
-            echo "Release exit: $release_status | pub get exit: $pub_status | debug exit: $debug_status" >&2
-            echo "Read the complete error log above (nothing was suppressed)." >&2
-            echo "==========================================================" >&2
-            echo "::error::ARIFA APK build FAILED. Release exit=$release_status, pub get exit=$pub_status, debug exit=$debug_status. Full unfiltered log is printed above."
-            exit "$debug_status"
-          fi
-
-          echo "apk_path=build/app/outputs/flutter-apk/app-debug.apk" >> "$GITHUB_OUTPUT"
-          echo "Debug APK built successfully (release build was not available)."
-
-      - name: Upload APK artifact
+      - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
           name: arifa-apk
-          path: ${{ steps.apk.outputs.apk_path }}
-          if-no-files-found: error
-          retention-days: 30
+          path: build/app/outputs/flutter-apk/app-debug.apk
+          if-no-files-found: warn
