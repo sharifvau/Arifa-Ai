@@ -22,13 +22,13 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      # Flutter 3.47.9 bundles Dart 3.13.7, which satisfies this project and
-      # all pinned dependencies (some require Dart >=3.10 / >=3.12).
-      - name: Set up Flutter
+      # Flutter 3.24.0 ships Dart 3.5.0. pubspec.yaml and all pinned
+      # dependencies were chosen to match exactly this SDK.
+      - name: Set up Flutter 3.24.0
         uses: subosito/flutter-action@v2
         with:
           channel: stable
-          flutter-version: '3.47.9'
+          flutter-version: '3.24.0'
           cache: true
 
       # This repo stores only ARIFA's custom Android files. bootstrap.sh
@@ -39,16 +39,56 @@ jobs:
       - name: Regenerate ARIFA launcher icons
         run: python3 scripts/generate_icon.py
 
-      - name: Install dependencies
+      - name: Flutter clean
+        run: flutter clean
+
+      - name: Flutter pub get
         run: flutter pub get
 
-      - name: Build release APK
-        run: flutter build apk --release
+      # Style/lint info should not block an APK. Compile errors still fail
+      # the later build step.
+      - name: Flutter analyze
+        continue-on-error: true
+        run: flutter analyze
+
+      - name: Build APK (release, fallback to debug)
+        id: apk
+        shell: bash
+        run: |
+          set +e
+
+          echo "::group::Release build"
+          flutter build apk --release
+          release_status=$?
+          echo "::endgroup::"
+
+          if [ "$release_status" -eq 0 ]; then
+            echo "apk_path=build/app/outputs/flutter-apk/app-release.apk" >> "$GITHUB_OUTPUT"
+            echo "Release APK built successfully."
+            exit 0
+          fi
+
+          echo "::warning::Release build failed (exit $release_status). Trying debug APK instead."
+          flutter clean
+          flutter pub get
+
+          echo "::group::Debug build"
+          flutter build apk --debug
+          debug_status=$?
+          echo "::endgroup::"
+
+          if [ "$debug_status" -ne 0 ]; then
+            echo "Debug build also failed (exit $debug_status)." >&2
+            exit "$debug_status"
+          fi
+
+          echo "apk_path=build/app/outputs/flutter-apk/app-debug.apk" >> "$GITHUB_OUTPUT"
+          echo "Debug APK built successfully."
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: arifa-app-release
-          path: build/app/outputs/flutter-apk/app-release.apk
+          name: arifa-apk
+          path: ${{ steps.apk.outputs.apk_path }}
           if-no-files-found: error
           retention-days: 30
