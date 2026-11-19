@@ -1,0 +1,82 @@
+plugins {
+    id "com.android.application"
+    id "kotlin-android"
+    // The Flutter Gradle Plugin must be applied after Android and Kotlin.
+    id "dev.flutter.flutter-gradle-plugin"
+}
+
+def localProperties = new Properties()
+def localPropertiesFile = rootProject.file("local.properties")
+if (localPropertiesFile.exists()) {
+    localPropertiesFile.withReader("UTF-8") { reader -> localProperties.load(reader) }
+}
+
+def flutterVersionCode = localProperties.getProperty("flutter.versionCode")
+if (flutterVersionCode == null) flutterVersionCode = "1"
+
+def flutterVersionName = localProperties.getProperty("flutter.versionName")
+if (flutterVersionName == null) flutterVersionName = "1.0"
+
+// Optional real release signing. Never commit this file or the keystore.
+// Without it, local `--release` builds remain debug-signed and are only for
+// smoke testing, not distribution.
+def keystoreProperties = new Properties()
+def keystorePropertiesFile = rootProject.file("key.properties")
+if (keystorePropertiesFile.exists()) {
+    keystorePropertiesFile.withReader("UTF-8") { reader -> keystoreProperties.load(reader) }
+}
+
+android {
+    // Matches: flutter create --org com.arifa.app --project-name arifa
+    namespace = "com.arifa.app.arifa"
+    compileSdk = 34
+    ndkVersion = "23.1.7779620"
+
+    compileOptions {
+        // Java 17 is the JDK used by CI; bytecode stays compatible with the
+        // Flutter 3.24 / AGP 7.3 toolchain.
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    kotlinOptions {
+        jvmTarget = "17"
+    }
+
+    defaultConfig {
+        applicationId = "com.arifa.app.arifa"
+        minSdk = 21
+        targetSdk = 34
+        versionCode = flutterVersionCode.toInteger()
+        versionName = flutterVersionName
+    }
+
+    signingConfigs {
+        release {
+            if (keystorePropertiesFile.exists()) {
+                keyAlias keystoreProperties['keyAlias']
+                keyPassword keystoreProperties['keyPassword']
+                storeFile rootProject.file(keystoreProperties['storeFile'])
+                storePassword keystoreProperties['storePassword']
+            } else {
+                // Local development fallback: explicitly debug-signed.
+                keyAlias "androiddebugkey"
+                keyPassword "android"
+                storeFile rootProject.file("app/debug.keystore")
+                storePassword "android"
+            }
+        }
+    }
+
+    buildTypes {
+        // Debug is the only CI target. Release uses a real keystore when
+        // android/key.properties is present, otherwise the debug key.
+        release {
+            signingConfig signingConfigs.release
+        }
+    }
+}
+
+flutter {
+    source = "../.."
+}

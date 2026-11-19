@@ -52,6 +52,9 @@ jobs:
       - name: Analyze (informational)
         run: flutter analyze --no-fatal-infos || true
 
+      # FIRST GREEN BUILD: lib/main.dart is the minimal Avatar + Settings +
+      # Chat version. Full features are preserved under backup/ and in git
+      # history; restore them after this baseline build is green.
       - name: Build debug APK with full verbose log
         id: debug_build
         shell: bash

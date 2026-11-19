@@ -17,14 +17,8 @@ if (flutterVersionCode == null) flutterVersionCode = "1"
 def flutterVersionName = localProperties.getProperty("flutter.versionName")
 if (flutterVersionName == null) flutterVersionName = "1.0"
 
-// Optional real release signing. Never commit this file or the keystore.
-// Without it, local `--release` builds remain debug-signed and are only for
-// smoke testing, not distribution.
-def keystoreProperties = new Properties()
-def keystorePropertiesFile = rootProject.file("key.properties")
-if (keystorePropertiesFile.exists()) {
-    keystorePropertiesFile.withReader("UTF-8") { reader -> keystoreProperties.load(reader) }
-}
+// First green build: stock debug signing only. The full signing setup is in
+// backup/config_full/build.gradle and can be restored after baseline is green.
 
 android {
     // Matches: flutter create --org com.arifa.app --project-name arifa
@@ -51,28 +45,10 @@ android {
         versionName = flutterVersionName
     }
 
-    signingConfigs {
-        release {
-            if (keystorePropertiesFile.exists()) {
-                keyAlias keystoreProperties['keyAlias']
-                keyPassword keystoreProperties['keyPassword']
-                storeFile rootProject.file(keystoreProperties['storeFile'])
-                storePassword keystoreProperties['storePassword']
-            } else {
-                // Local development fallback: explicitly debug-signed.
-                keyAlias "androiddebugkey"
-                keyPassword "android"
-                storeFile rootProject.file("app/debug.keystore")
-                storePassword "android"
-            }
-        }
-    }
-
     buildTypes {
-        // Debug is the only CI target. Release uses a real keystore when
-        // android/key.properties is present, otherwise the debug key.
+        // Debug is the only CI target for the first green build.
         release {
-            signingConfig signingConfigs.release
+            // uses the default Android debug key; restored later from backup.
         }
     }
 }

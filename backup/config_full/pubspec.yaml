@@ -1,0 +1,40 @@
+name: arifa
+description: "ARIFA - a cute, friendly Bangladeshi AI assistant for Emon Bhai."
+publish_to: none
+version: 1.0.0+1
+
+# Flutter 3.24.0 stable ships Dart 3.5.0. Every direct pin below is from that
+# era, so no package drags in AGP 8.6+/Kotlin 2.x/compileSdk 35. No API key or
+# model version is bundled here.
+environment:
+  sdk: ">=3.5.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # Android-compatible pin kept per the Flutter 3.24 toolchain constraint.
+  flutter_secure_storage: 8.1.0
+  http: 1.2.2
+  shared_preferences: 2.2.3
+  speech_to_text: 7.0.0
+  flutter_tts: 4.2.0
+  permission_handler: 11.3.0
+  path_provider: 2.1.4
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  # 4.x is the last flutter_lints line that supports Dart 3.5 / Flutter 3.24.
+  flutter_lints: 4.0.0
+
+# These are NOT extra features. They only freeze two Android-only transitive
+# plugins so they cannot climb to AGP 8.5+/compileSdk 35 behind our back.
+dependency_overrides:
+  flutter_plugin_android_lifecycle: 2.0.21
+  path_provider_android: 2.2.6
+
+flutter:
+  uses-material-design: true
+  assets:
+    - models.json
