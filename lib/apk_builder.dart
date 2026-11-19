@@ -38,7 +38,7 @@ class ApkBuilder {
     for (var attempt = 1; attempt <= maxAttempts; attempt++) {
       onProgress?.call(
         'generate',
-        '${attempt} নম্বর চেষ্টায় কোড তৈরি করছি Emon Bhai...',
+        '$attempt নম্বর চেষ্টায় কোড তৈরি করছি Emon Bhai...',
       );
       app = await _brain.generateApp(
         request,
@@ -143,7 +143,7 @@ API keys are NOT included in this project.
       final bytes = utf8.encode(file.content);
       archive.addFile(ArchiveFile(file.path, bytes.length, bytes));
     }
-    final zipBytes = ZipEncoder().encode(archive) ?? <int>[];
+    final zipBytes = ZipEncoder().encode(archive);
     final zip = File('${dir.path}/arifa_projects/$safeName.zip');
     zip.writeAsBytesSync(zipBytes);
     return zip.path;

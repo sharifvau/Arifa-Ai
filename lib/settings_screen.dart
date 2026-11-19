@@ -1,13 +1,14 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 
+import 'auto_reply_service.dart';
 import 'config.dart';
 import 'model_entry.dart';
 import 'settings_service.dart';
@@ -24,6 +25,28 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final _gemini = TextEditingController();
   final _openRouter = TextEditingController();
   final _customId = TextEditingController();
+
+  // WhatsApp Auto Reply controls
+  final _waAllowInput = TextEditingController();
+  final _waCustomContact = TextEditingController();
+  final _waCustomReply = TextEditingController();
+  final _waToken = TextEditingController();
+  final _waPhoneId = TextEditingController();
+  final _waStyle = TextEditingController();
+  final _waImportant = TextEditingController();
+  StreamSubscription<List<AutoReplyLogEntry>>? _waLogSub;
+
+  late bool _waEnabled;
+  late bool _waCloudBrain;
+  late bool _waCloudApi;
+  late bool _waReplyUnknown;
+  List<String> _waAllow = const [];
+  List<String> _waStyles = const [];
+  List<String> _waImportantList = const [];
+  Map<String, String> _waReplies = const {};
+  List<AutoReplyLogEntry> _waLogs = const [];
+  bool _notifAccess = false;
+  bool _accessibility = false;
 
   late VoiceChoice _voice;
   late bool _wake;
@@ -42,14 +65,68 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _openRouter.text = s.openRouterKey;
     _voice = s.voice;
     _wake = s.wakeEnabled;
+
+    _waEnabled = s.whatsappAutoReply;
+    _waAllow = List.unmodifiable(s.whatsappAllowList);
+    _waImportantList = List.unmodifiable(s.whatsappImportantContacts);
+    _waStyles = List.unmodifiable(s.whatsappStyleSamples);
+    _waReplies = Map.unmodifiable(s.whatsappCustomReplies);
+    _waCloudBrain = s.whatsappUseCloudBrain;
+    _waCloudApi = s.whatsappUseCloudApi;
+    _waReplyUnknown = s.whatsappReplyUnknown;
+    _waToken.text = s.whatsappBusinessToken;
+    _waPhoneId.text = s.whatsappBusinessPhoneId;
+    _waImportant.text = _waImportantList.join(', ');
+    _waLogs = AutoReplyService.instance.entries;
+
+    _waLogSub = AutoReplyService.instance.logs.listen((logs) {
+      if (mounted) setState(() => _waLogs = logs);
+    });
+    _refreshWaPermissions();
   }
 
   @override
   void dispose() {
+    _waLogSub?.cancel();
     _gemini.dispose();
     _openRouter.dispose();
     _customId.dispose();
+    _waAllowInput.dispose();
+    _waCustomContact.dispose();
+    _waCustomReply.dispose();
+    _waToken.dispose();
+    _waPhoneId.dispose();
+    _waStyle.dispose();
+    _waImportant.dispose();
     super.dispose();
+  }
+
+  Future<void> _refreshWaPermissions() async {
+    final listener = AutoReplyService.instance.notificationListener;
+    final notif = await listener.notificationAccessEnabled;
+    final acc = await listener.accessibilityEnabled;
+    if (!mounted) return;
+    setState(() {
+      _notifAccess = notif;
+      _accessibility = acc;
+    });
+  }
+
+  /// Every WhatsApp control takes effect immediately — no Save needed.
+  Future<void> _persistWa({bool includeEnabled = true}) async {
+    await SettingsService.instance.saveWhatsApp(
+      enabled: includeEnabled ? _waEnabled : null,
+      allowList: _waAllow,
+      importantContacts: _waImportantList,
+      businessToken: _waToken.text,
+      businessPhoneId: _waPhoneId.text,
+      useCloudBrain: _waCloudBrain,
+      useCloudApi: _waCloudApi,
+      styleSamples: _waStyles,
+      customReplies: _waReplies,
+      replyUnknown: _waReplyUnknown,
+    );
+    await AutoReplyService.instance.refreshConfig();
   }
 
   void _snack(String text) {
@@ -65,14 +142,25 @@ class _SettingsScreenState extends State<SettingsScreen> {
         openRouter: _openRouter.text,
         selectedVoice: _voice,
         selectedWake: _wake,
+        whatsappAutoReplyEnabled: _waEnabled,
+        whatsappAllow: _waAllow,
+        whatsappImportant: _waImportantList,
+        whatsappToken: _waToken.text,
+        whatsappPhoneId: _waPhoneId.text,
+        whatsappCloudBrain: _waCloudBrain,
+        whatsappCloudApi: _waCloudApi,
+        whatsappStyles: _waStyles,
+        whatsappReplies: _waReplies,
+        whatsappReplyToUnknown: _waReplyUnknown,
       );
+      await AutoReplyService.instance.refreshConfig();
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text('সেভ হয়েছে Emon Bhai ♥ (encrypted storage-এ)'),
           ),
         );
-        Navigator.pop(true);
+        Navigator.of(context).pop(true);
       }
     } catch (e) {
       _snack('সেভ করা যায়নি Emon Bhai: $e');
@@ -163,14 +251,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ),
                   items: ModelProvider.values
                       .map(
-                        (p) => DropdownMenuItem(
-                          value: p,
-                          child: Text(p.label),
-                        ),
+                        (p) => DropdownMenuItem(value: p, child: Text(p.label)),
                       )
                       .toList(),
-                  onChanged: (v) =>
-                      setDialog(() => provider = v ?? provider),
+                  onChanged: (v) => setDialog(() => provider = v ?? provider),
                 ),
                 CheckboxListTile(
                   value: vision,
@@ -207,10 +291,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 );
               },
               style: FilledButton.styleFrom(backgroundColor: Colors.cyanAccent),
-              child: const Text(
-                'Save',
-                style: TextStyle(color: Colors.black),
-              ),
+              child: const Text('Save', style: TextStyle(color: Colors.black)),
             ),
           ],
         ),
@@ -388,10 +469,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       file.writeAsStringSync(
         const JsonEncoder.withIndent('  ').convert(catalog.toJson()),
       );
-      await Share.shareXFiles(
-        [XFile(file.path)],
-        subject: 'ARIFA models.json',
-      );
+      await Share.shareXFiles([XFile(file.path)], subject: 'ARIFA models.json');
     } catch (e) {
       _snack('Export fail: $e');
     }
@@ -428,13 +506,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
         children: [
           _privacyCard(),
           const SizedBox(height: 16),
+          _whatsAppCard(),
+          const SizedBox(height: 16),
           _keyField(
             controller: _gemini,
             label: 'Gemini API Key',
             hint: 'Google AI Studio key',
             obscure: _obscureGemini,
-            onToggle: () =>
-                setState(() => _obscureGemini = !_obscureGemini),
+            onToggle: () => setState(() => _obscureGemini = !_obscureGemini),
           ),
           const SizedBox(height: 12),
           _keyField(
@@ -462,10 +541,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
               ),
               items: VoiceChoice.values
-                  .map(
-                    (v) =>
-                        DropdownMenuItem(value: v, child: Text(v.label)),
-                  )
+                  .map((v) => DropdownMenuItem(value: v, child: Text(v.label)))
                   .toList(),
               onChanged: (v) => setState(() => _voice = v ?? _voice),
             ),
@@ -481,8 +557,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               value: _wake,
               onChanged: (v) => setState(() => _wake = v),
               activeColor: Colors.cyanAccent,
-              secondary:
-                  const Icon(Icons.graphic_eq, color: Colors.cyanAccent),
+              secondary: const Icon(Icons.graphic_eq, color: Colors.cyanAccent),
               title: const Text(
                 'Wake Word ON/OFF',
                 style: TextStyle(color: Colors.white),
@@ -516,6 +591,551 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   borderRadius: BorderRadius.circular(26),
                 ),
               ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ---------- WhatsApp Auto Reply ----------
+
+  void _addWaAllow() {
+    final value = _waAllowInput.text.trim();
+    if (value.isEmpty) return;
+    setState(() {
+      if (!_waAllow.any((e) => e.toLowerCase() == value.toLowerCase())) {
+        _waAllow = [..._waAllow, value];
+      }
+      _waAllowInput.clear();
+    });
+    unawaited(_persistWa());
+  }
+
+  void _removeWaAllow(String value) {
+    setState(() => _waAllow = _waAllow.where((e) => e != value).toList());
+    unawaited(_persistWa());
+  }
+
+  void _addWaReply() {
+    final contact = _waCustomContact.text.trim();
+    final reply = _waCustomReply.text.trim();
+    if (contact.isEmpty || reply.isEmpty) return;
+    setState(() {
+      _waReplies = {..._waReplies, contact: reply};
+      _waCustomContact.clear();
+      _waCustomReply.clear();
+    });
+    unawaited(_persistWa());
+  }
+
+  void _removeWaReply(String contact) {
+    final next = Map<String, String>.from(_waReplies)..remove(contact);
+    setState(() => _waReplies = next);
+    unawaited(_persistWa());
+  }
+
+  void _addWaStyle() {
+    final value = _waStyle.text.trim();
+    if (value.isEmpty) return;
+    setState(() {
+      _waStyles = [..._waStyles, value];
+      _waStyle.clear();
+    });
+    unawaited(_persistWa());
+  }
+
+  void _removeWaStyle(String value) {
+    setState(() => _waStyles = _waStyles.where((e) => e != value).toList());
+    unawaited(_persistWa());
+  }
+
+  Widget _whatsAppCard() {
+    final listener = AutoReplyService.instance.notificationListener;
+    return Card(
+      color: const Color(0xFF08182A),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(14),
+        side: BorderSide(color: Colors.greenAccent.withOpacity(0.35)),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: const [
+                Icon(Icons.chat_bubble_outline, color: Colors.greenAccent),
+                SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'WhatsApp Auto Reply',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 16,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            const Text(
+              'Switch, allow list, custom reply আর log — সব শুধু এই ফোনে। '
+              'ON/OFF আর বাকি সব সেটিংস সাথে সেভ হয় (Save চাপতে হবে না)।',
+              style: TextStyle(color: Colors.white54, fontSize: 11),
+            ),
+            const SizedBox(height: 10),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              value: _waEnabled,
+              activeColor: Colors.greenAccent,
+              secondary: Container(
+                width: 16,
+                height: 16,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: _waEnabled ? Colors.greenAccent : Colors.redAccent,
+                  boxShadow: [
+                    BoxShadow(
+                      color:
+                          (_waEnabled ? Colors.greenAccent : Colors.redAccent)
+                              .withOpacity(0.8),
+                      blurRadius: 10,
+                      spreadRadius: 2,
+                    ),
+                  ],
+                ),
+              ),
+              title: Text(
+                _waEnabled ? 'Auto Reply ON' : 'Auto Reply OFF',
+                style: TextStyle(
+                  color: _waEnabled ? Colors.greenAccent : Colors.redAccent,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              subtitle: const Text(
+                'Voice: "Arifa WhatsApp auto reply ON/OFF koro"',
+                style: TextStyle(color: Colors.white54, fontSize: 11),
+              ),
+              onChanged: (v) async {
+                setState(() => _waEnabled = v);
+                await _persistWa();
+              },
+            ),
+            const SizedBox(height: 6),
+            Row(
+              children: [
+                Expanded(
+                  child: _permissionButton(
+                    label: _notifAccess
+                        ? 'Notification access ON'
+                        : 'Give notification access',
+                    ok: _notifAccess,
+                    onTap: () async {
+                      await listener.openNotificationSettings();
+                      await _refreshWaPermissions();
+                    },
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: _permissionButton(
+                    label: _accessibility
+                        ? 'Accessibility ON'
+                        : 'Give accessibility',
+                    ok: _accessibility,
+                    onTap: () async {
+                      await listener.openAccessibilitySettings();
+                      await _refreshWaPermissions();
+                    },
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 14),
+            const Text(
+              'Kake reply dibo (Allow List)',
+              style: TextStyle(
+                color: Colors.greenAccent,
+                fontWeight: FontWeight.bold,
+                fontSize: 13,
+              ),
+            ),
+            const SizedBox(height: 6),
+            const Text(
+              'এই নাম/নম্বর ছাড়া কোনো মেসেজ পড়া বা reply দেওয়া হবে না। '
+              '"*" দিলে সবাইকে reply দিবে (unknown line সহ)।',
+              style: TextStyle(color: Colors.white38, fontSize: 10),
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Expanded(
+                  child: _waInput(
+                    controller: _waAllowInput,
+                    label: 'Contact name / number',
+                    hint: 'Ammu, 017..., or *',
+                  ),
+                ),
+                const SizedBox(width: 6),
+                IconButton(
+                  onPressed: _addWaAllow,
+                  icon: const Icon(Icons.add_circle, color: Colors.greenAccent),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            Wrap(
+              spacing: 6,
+              runSpacing: 4,
+              children: _waAllow.isEmpty
+                  ? const [
+                      Text(
+                        'কেউ এড করা হয়নি — কিছুই পড়া হবে না',
+                        style: TextStyle(color: Colors.white38, fontSize: 11),
+                      ),
+                    ]
+                  : _waAllow
+                        .map(
+                          (c) => Chip(
+                            label: Text(
+                              c,
+                              style: const TextStyle(
+                                color: Colors.greenAccent,
+                                fontSize: 11,
+                              ),
+                            ),
+                            backgroundColor: const Color(0xFF0A2036),
+                            onDeleted: () => _removeWaAllow(c),
+                          ),
+                        )
+                        .toList(),
+            ),
+            const SizedBox(height: 14),
+            const Text(
+              'Kake ki reply dibo (custom rules)',
+              style: TextStyle(
+                color: Colors.greenAccent,
+                fontWeight: FontWeight.bold,
+                fontSize: 13,
+              ),
+            ),
+            const SizedBox(height: 8),
+            _waInput(
+              controller: _waCustomContact,
+              label: 'Contact',
+              hint: 'e.g. Ammu',
+            ),
+            const SizedBox(height: 8),
+            _waInput(
+              controller: _waCustomReply,
+              label: 'Reply message',
+              hint: 'Emon Bhai ektu busy ache...',
+            ),
+            Align(
+              alignment: Alignment.centerRight,
+              child: TextButton.icon(
+                onPressed: _addWaReply,
+                icon: const Icon(Icons.add, size: 16),
+                label: const Text('Add rule'),
+                style: TextButton.styleFrom(
+                  foregroundColor: Colors.greenAccent,
+                ),
+              ),
+            ),
+            for (final entry in _waReplies.entries)
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                title: Text(
+                  entry.key,
+                  style: const TextStyle(
+                    color: Colors.greenAccent,
+                    fontSize: 12,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                subtitle: Text(
+                  entry.value,
+                  style: const TextStyle(color: Colors.white70, fontSize: 11),
+                ),
+                trailing: IconButton(
+                  icon: const Icon(
+                    Icons.delete_outline,
+                    size: 18,
+                    color: Colors.redAccent,
+                  ),
+                  onPressed: () => _removeWaReply(entry.key),
+                ),
+              ),
+            const SizedBox(height: 10),
+            const Text(
+              'Amar talking style (setting er moton kotha shikhbe)',
+              style: TextStyle(
+                color: Colors.greenAccent,
+                fontWeight: FontWeight.bold,
+                fontSize: 13,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Expanded(
+                  child: _waInput(
+                    controller: _waStyle,
+                    label: 'Style sample',
+                    hint: 'are ei to achi, bol ki khobor?',
+                  ),
+                ),
+                const SizedBox(width: 6),
+                IconButton(
+                  onPressed: _addWaStyle,
+                  icon: const Icon(Icons.add_circle, color: Colors.greenAccent),
+                ),
+              ],
+            ),
+            Wrap(
+              spacing: 6,
+              children: _waStyles
+                  .map(
+                    (s) => Chip(
+                      label: Text(
+                        s,
+                        style: const TextStyle(
+                          color: Colors.white70,
+                          fontSize: 10,
+                        ),
+                      ),
+                      backgroundColor: const Color(0xFF0A2036),
+                      onDeleted: () => _removeWaStyle(s),
+                    ),
+                  )
+                  .toList(),
+            ),
+            const SizedBox(height: 10),
+            _waInput(
+              controller: _waImportant,
+              label: 'Important contacts (comma separated)',
+              hint: 'Ammu, Family',
+              onChanged: (v) {
+                _waImportantList = v
+                    .split(',')
+                    .map((e) => e.trim())
+                    .where((e) => e.isNotEmpty)
+                    .toList();
+              },
+            ),
+            const SizedBox(height: 4),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              value: _waReplyUnknown,
+              activeColor: Colors.greenAccent,
+              title: const Text(
+                'Unknown person-ke fixed line reply',
+                style: TextStyle(color: Colors.white, fontSize: 12),
+              ),
+              subtitle: const Text(
+                'OFF: unknown person-ke kichu reply dibo na (safe)',
+                style: TextStyle(color: Colors.white54, fontSize: 10),
+              ),
+              onChanged: (v) async {
+                setState(() => _waReplyUnknown = v);
+                await _persistWa();
+              },
+            ),
+            const SizedBox(height: 10),
+            const Text(
+              'Optional cloud (default OFF)',
+              style: TextStyle(
+                color: Colors.orangeAccent,
+                fontWeight: FontWeight.bold,
+                fontSize: 13,
+              ),
+            ),
+            const SizedBox(height: 4),
+            const Text(
+              'Cloud Brain/API ON করলে incoming message text তোমার configured '
+              'AI model বা WhatsApp-এ পাঠানো যাবে। Privacy চাইলে দুটোই OFF রাখো ♥',
+              style: TextStyle(color: Colors.white38, fontSize: 10),
+            ),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              value: _waCloudBrain,
+              activeColor: Colors.orangeAccent,
+              title: const Text(
+                'Use AI brain to compose reply',
+                style: TextStyle(color: Colors.white, fontSize: 12),
+              ),
+              onChanged: (v) async {
+                setState(() => _waCloudBrain = v);
+                await _persistWa();
+              },
+            ),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              value: _waCloudApi,
+              activeColor: Colors.orangeAccent,
+              title: const Text(
+                'Send via WhatsApp Business Cloud API',
+                style: TextStyle(color: Colors.white, fontSize: 12),
+              ),
+              onChanged: (v) async {
+                setState(() => _waCloudApi = v);
+                await _persistWa();
+              },
+            ),
+            const SizedBox(height: 8),
+            _waInput(
+              controller: _waToken,
+              label: 'Business Cloud Token',
+              hint: 'optional',
+            ),
+            const SizedBox(height: 8),
+            _waInput(
+              controller: _waPhoneId,
+              label: 'Phone Number ID',
+              hint: 'optional',
+            ),
+            const SizedBox(height: 14),
+            Row(
+              children: const [
+                Icon(Icons.history, color: Colors.greenAccent, size: 18),
+                SizedBox(width: 8),
+                Text(
+                  'Kake ki reply dilam',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 14,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            if (_waLogs.isEmpty)
+              const Text(
+                'Ekhono kono reply dei nai Emon Bhai ♥',
+                style: TextStyle(color: Colors.white38, fontSize: 11),
+              )
+            else
+              ..._waLogs.take(40).map(_waLogTile),
+            Align(
+              alignment: Alignment.centerRight,
+              child: TextButton.icon(
+                onPressed: () async {
+                  await AutoReplyService.instance.clearLogs();
+                  if (mounted) _snack('Reply log clear hoyeche Emon Bhai');
+                },
+                icon: const Icon(Icons.delete_sweep, size: 15),
+                label: const Text('Clear log'),
+                style: TextButton.styleFrom(foregroundColor: Colors.redAccent),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _permissionButton({
+    required String label,
+    required bool ok,
+    required VoidCallback onTap,
+  }) {
+    return OutlinedButton.icon(
+      onPressed: onTap,
+      icon: Icon(
+        ok ? Icons.check_circle : Icons.warning_amber_rounded,
+        size: 15,
+      ),
+      label: Text(
+        label,
+        style: const TextStyle(fontSize: 10),
+        overflow: TextOverflow.ellipsis,
+      ),
+      style: OutlinedButton.styleFrom(
+        foregroundColor: ok ? Colors.greenAccent : Colors.orangeAccent,
+        side: BorderSide(
+          color: (ok ? Colors.greenAccent : Colors.orangeAccent).withOpacity(
+            0.6,
+          ),
+        ),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      ),
+    );
+  }
+
+  Widget _waInput({
+    required TextEditingController controller,
+    required String label,
+    required String hint,
+    bool obscure = false,
+    ValueChanged<String>? onChanged,
+  }) {
+    return TextField(
+      controller: controller,
+      obscureText: obscure,
+      onChanged: onChanged,
+      style: const TextStyle(color: Colors.white, fontSize: 12),
+      decoration: InputDecoration(
+        labelText: label,
+        labelStyle: const TextStyle(color: Colors.greenAccent, fontSize: 11),
+        hintText: hint,
+        hintStyle: const TextStyle(color: Colors.white24, fontSize: 11),
+        filled: true,
+        fillColor: const Color(0xFF04121F),
+        border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+        enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(10),
+          borderSide: BorderSide(color: Colors.greenAccent.withOpacity(0.3)),
+        ),
+      ),
+    );
+  }
+
+  Widget _waLogTile(AutoReplyLogEntry e) {
+    final time =
+        '${e.at.hour.toString().padLeft(2, '0')}:${e.at.minute.toString().padLeft(2, '0')}';
+    return Container(
+      margin: const EdgeInsets.only(bottom: 6),
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
+        color: const Color(0xFF04121F),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.white12),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Text(
+                e.contact,
+                style: const TextStyle(
+                  color: Colors.greenAccent,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 12,
+                ),
+              ),
+              const Spacer(),
+              Text(
+                time,
+                style: const TextStyle(color: Colors.white38, fontSize: 10),
+              ),
+            ],
+          ),
+          const SizedBox(height: 3),
+          Text(
+            '${e.incoming}  →  ${e.reply}',
+            style: const TextStyle(color: Colors.white70, fontSize: 11),
+          ),
+          const SizedBox(height: 3),
+          Text(
+            '${e.sent ? 'sent' : 'fail'} • ${e.channel} • ${e.source}'
+            '${e.important ? ' • important' : ''}',
+            style: TextStyle(
+              color: e.sent ? Colors.greenAccent : Colors.redAccent,
+              fontSize: 10,
             ),
           ),
         ],
@@ -562,8 +1182,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
           children: [
             Row(
               children: const [
-                Icon(Icons.psychology_outlined,
-                    color: Colors.cyanAccent, size: 20),
+                Icon(
+                  Icons.psychology_outlined,
+                  color: Colors.cyanAccent,
+                  size: 20,
+                ),
                 SizedBox(width: 8),
                 Expanded(
                   child: Text(
@@ -666,8 +1289,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                               value: p,
                               child: Text(p.label),
                             ),
-                          )
-                          .toList(),
+                          ),
                     ],
                     onChanged: (v) => setState(() => _customProvider = v),
                   ),
@@ -704,7 +1326,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
       child: Row(
         children: [
           Icon(
-            isDefault ? Icons.radio_button_checked : Icons.radio_button_unchecked,
+            isDefault
+                ? Icons.radio_button_checked
+                : Icons.radio_button_unchecked,
             color: isDefault ? Colors.cyanAccent : Colors.white38,
             size: 18,
           ),

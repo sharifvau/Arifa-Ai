@@ -3,7 +3,10 @@ description: "ARIFA - a cute, friendly Bangladeshi AI assistant for Emon Bhai."
 publish_to: "none"
 version: 1.0.0+1
 
-# Pinned for Flutter 3.24.0 stable (Dart 3.5.0).
+# Flutter 3.24.0 ships Dart 3.5.0 and generates Gradle 7.6.3 / AGP 7.3.0 /
+# Kotlin 1.7.10 / compileSdk 34. Every pin below is from that era.
+# Newer plugins force AGP 8.6+/Kotlin 2.x/compileSdk 35 + core library
+# desugaring and break the Android Gradle compile even though pub get succeeds.
 environment:
   sdk: ">=3.5.0 <4.0.0"
 
@@ -12,23 +15,24 @@ dependencies:
     sdk: flutter
 
   # Core — exact pins keep CI reproducible on Flutter 3.24.0.
-  http: 1.6.0
-  archive: 4.7.1
-  path_provider: 2.1.5
-  share_plus: 12.0.2
+  http: 1.2.2
+  archive: 4.4.0
+  path_provider: 2.1.4
+  share_plus: 10.0.2
   cross_file: 0.3.4+2
-  file_picker: 11.0.3
+  file_picker: 8.0.0
 
   # Encrypted on-device settings. No key is stored in source code or assets.
-  flutter_secure_storage: 10.3.4
+  flutter_secure_storage: 9.2.2
 
   # Voice
-  flutter_tts: 4.2.5
-  speech_to_text: 7.4.0
+  flutter_tts: 4.2.0
+  speech_to_text: 7.0.0
 
-  # Background + notifications
-  flutter_local_notifications: 19.5.0
-  permission_handler: 12.0.3
+  # Background + notifications. 17.2.2 avoids flutter_local_notifications_windows
+  # and the Dart 3.8 / xml 6.6+ requirement brought by the 19.x line.
+  flutter_local_notifications: 17.2.2
+  permission_handler: 11.3.0
 
 dev_dependencies:
   flutter_test:

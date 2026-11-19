@@ -238,9 +238,9 @@ class _AvatarPainter extends CustomPainter {
     final dressPath = Path()
       ..moveTo(cx - w * 0.12, h * 0.56)
       ..lineTo(cx + w * 0.12, h * 0.56)
-      ..quadraticCurveTo(cx + w * 0.34, h * 0.70, cx + w * 0.38, h)
+      ..quadraticBezierTo(cx + w * 0.34, h * 0.70, cx + w * 0.38, h)
       ..lineTo(cx - w * 0.38, h)
-      ..quadraticCurveTo(cx - w * 0.34, h * 0.70, cx - w * 0.12, h * 0.56)
+      ..quadraticBezierTo(cx - w * 0.34, h * 0.70, cx - w * 0.12, h * 0.56)
       ..close();
     canvas.drawPath(dressPath, dress);
 
@@ -302,25 +302,25 @@ class _AvatarPainter extends CustomPainter {
     final sway = math.sin(t) * rx * 0.035;
     final bang = Path()
       ..moveTo(cx - rx, faceCy - ry * 0.35)
-      ..quadraticCurveTo(
+      ..quadraticBezierTo(
         cx - rx * 0.55,
         faceCy - ry * 1.35,
         cx + rx * 0.10,
         faceCy - ry * 1.05,
       )
-      ..quadraticCurveTo(
+      ..quadraticBezierTo(
         cx + rx * 0.85,
         faceCy - ry * 0.95,
         cx + rx,
         faceCy - ry * 0.20,
       )
-      ..quadraticCurveTo(
+      ..quadraticBezierTo(
         cx + rx * 0.45,
         faceCy - ry * 0.72,
         cx - rx * 0.10,
         faceCy - ry * 0.54,
       )
-      ..quadraticCurveTo(
+      ..quadraticBezierTo(
         cx - rx * 0.70,
         faceCy - ry * 0.38,
         cx - rx,
@@ -331,13 +331,13 @@ class _AvatarPainter extends CustomPainter {
 
     final leftLock = Path()
       ..moveTo(cx - rx * 0.92, faceCy - ry * 0.25)
-      ..quadraticCurveTo(
+      ..quadraticBezierTo(
         cx - rx * 1.22 + sway,
         faceCy + ry * 0.75,
         cx - rx * 0.80 + sway,
         faceCy + ry * 1.55,
       )
-      ..quadraticCurveTo(
+      ..quadraticBezierTo(
         cx - rx * 0.60,
         faceCy + ry * 0.80,
         cx - rx * 0.72,
@@ -346,13 +346,13 @@ class _AvatarPainter extends CustomPainter {
       ..close();
     final rightLock = Path()
       ..moveTo(cx + rx * 0.92, faceCy - ry * 0.25)
-      ..quadraticCurveTo(
+      ..quadraticBezierTo(
         cx + rx * 1.22 - sway,
         faceCy + ry * 0.75,
         cx + rx * 0.80 - sway,
         faceCy + ry * 1.55,
       )
-      ..quadraticCurveTo(
+      ..quadraticBezierTo(
         cx + rx * 0.60,
         faceCy + ry * 0.80,
         cx + rx * 0.72,
@@ -479,7 +479,7 @@ class _AvatarPainter extends CustomPainter {
     } else if (currentFace == _Face.sad) {
       final p = Path()
         ..moveTo(cx - rx * 0.16, mouthY + ry * 0.06)
-        ..quadraticCurveTo(cx, mouthY - ry * 0.10, cx + rx * 0.16, mouthY + ry * 0.06);
+        ..quadraticBezierTo(cx, mouthY - ry * 0.10, cx + rx * 0.16, mouthY + ry * 0.06);
       canvas.drawPath(p, mouth);
     } else if (currentFace == _Face.thinking) {
       canvas.drawLine(
@@ -490,7 +490,7 @@ class _AvatarPainter extends CustomPainter {
     } else {
       final p = Path()
         ..moveTo(cx - rx * 0.18, mouthY - ry * 0.03)
-        ..quadraticCurveTo(cx, mouthY + ry * 0.16, cx + rx * 0.18, mouthY - ry * 0.03);
+        ..quadraticBezierTo(cx, mouthY + ry * 0.16, cx + rx * 0.18, mouthY - ry * 0.03);
       canvas.drawPath(p, mouth);
     }
 

@@ -126,6 +126,52 @@ the accent sounds wrong.
 
 ---
 
+## 3.1 WhatsApp Auto Reply (new)
+
+Say **“Arifa WhatsApp auto reply ON koro”** / **“Arifa WhatsApp auto reply OFF koro”**.
+The home screen shows a big **green dot + WA Reply ON** or **red dot + WA Reply OFF**;
+tapping that pill toggles it too. No brain call, no delay.
+
+### Setup (one time)
+
+1. In **Settings → WhatsApp Auto Reply**, tap **Give notification access** and allow
+   ARIFA to read notifications.
+2. Tap **Give accessibility** and enable ARIFA's Accessibility Service so it can
+   type into WhatsApp and tap Send.
+3. Add names/numbers to **Kake reply dibo (Allow List)**. Nothing is read until
+   auto reply is ON **and** at least one contact is allowed. `*` means everyone
+   (only with the “Unknown person-ke fixed line reply” switch).
+
+### How a reply happens
+
+- `ArifaNotificationListener.kt` sees only allow-listed WhatsApp / WhatsApp
+  Business **message notifications**, drops group summaries and “typing…”, and
+  sends contact + text + notification key to Dart **on the device**.
+- The instant local style brain writes a Bangla + English, human-sounding reply
+  (e.g. `hi, kemon achos?`, `are ei to achi, ektu busy chilam, bol ki khobor?`,
+  the exact work/APK busy line, and the unknown-sender line).
+- A **0.5 s human typing beat** runs, then the accessibility service opens the
+  exact chat from the notification's own PendingIntent, types the reply and
+  taps Send. Local path: typically **under 1 second**. Optional cloud brain is
+  time-boxed to 1.1 s with instant local fallback, so the total stays 1–2 s.
+- Every attempt is written to the encrypted **“Kake ki reply dilam”** log in
+  Settings (contact, incoming, reply, time, sent/failed, channel). Clear anytime.
+- Ammu / Family (editable list) also raise a local notification:
+  *“Emon Bhai, Ammu message dise, dekhen”*.
+
+### Privacy switches (both OFF by default)
+
+- **Use AI brain to compose reply** — sends the incoming message text and your
+  saved style samples to your configured Gemini / OpenRouter model.
+- **Send via WhatsApp Business Cloud API** — uses your own token + Phone Number
+  ID and sends the reply through Meta's servers.
+
+Leave both OFF and every message stays on your phone. Your own talking style is
+learned from style samples you type in Settings plus your last local replies —
+ARIFA does not read your WhatsApp chat history.
+
+---
+
 ## 4. What is real and what is not
 
 | Request | Reality | What ARIFA does |
@@ -192,6 +238,7 @@ bash scripts/build_apk.sh
 | `Arifa screen dekho` | Screenshot → vision model → Bangla explanation; auto-fixes a generated app if an error is visible. |
 | `Arifa calculator APK banaw` | Generate code → AI review → self-repair → **source zip** → share sheet + notification. |
 | `Arifa WhatsApp message 017... hello` / `Arifa open YouTube` / `Arifa wifi on` / `Arifa call 017...` / `Arifa play Bangla hits` | Android intents + accessibility. |
+| `Arifa WhatsApp auto reply ON/OFF koro` | Instant local toggle — green/red home dot, allow-listed replies start/stop. |
 | `Arifa settings` | Opens Settings / Model Manager. |
 | Anything else | Routed through your saved models with failover. |
 
@@ -214,11 +261,15 @@ lib/voice_service.dart        Settings-driven TTS/STT + wake matching
 lib/screen_service.dart       MediaProjection -> vision -> error report
 lib/apk_builder.dart          source generation + review + zip packaging
 lib/phone_control.dart        intents + accessibility wrappers
+lib/notification_listener.dart native notification listener bridge + permission helpers
+lib/whatsapp_service.dart     accessibility typing/send + optional Business Cloud API
+lib/auto_reply_service.dart   instant style brain, allow list, queue, encrypted reply log
 lib/background_service.dart   native channel for FGS/screenshot events
 lib/config.dart               endpoints only — no keys, no model versions
 lib/models.dart               chat/code data classes
 android/.../ArifaService.kt            wake word + screenshot foreground service
-android/.../ArifaAccessibilityService.kt UI taps
+android/.../ArifaAccessibilityService.kt UI taps + WhatsApp composer typing
+android/.../ArifaNotificationListener.kt allow-listed WhatsApp notification reader
 android/.../MainActivity.kt            intents + MediaProjection consent
 scripts/generate_icon.py       local PNG launcher-icon generator
 scripts/bootstrap.sh           flutter create + restore custom files
@@ -234,6 +285,10 @@ scripts/build_apk.sh           real external APK build
   optimisation for ARIFA and enable auto-start.
 - `SpeechRecognizer` needs Google's speech service and network access.
 - WhatsApp auto-send depends on its current UI; the accessibility tap may miss.
+- Auto Reply needs both Notification access and Accessibility enabled. WhatsApp
+  sometimes changes notification text/composer IDs; when a send fails, the
+  reason is recorded in the **Kake ki reply dilam** log. Cloud options are OFF
+  by default so message text stays on the device until you opt in.
 - OpenRouter model slugs change. Use **Fetch Latest Models** or a custom ID if
   one returns 404 — nothing needs to be edited in source.
 - API keys and the model catalog live only on your device. Wiping app data

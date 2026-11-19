@@ -2,6 +2,7 @@ package com.example.arifa
 
 import android.Manifest
 import android.app.Activity
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -21,13 +22,19 @@ import io.flutter.plugin.common.MethodChannel
 class MainActivity : FlutterActivity() {
     private val methodChannelName = "arifa/native"
     private val eventChannelName = "arifa/events"
+    private val whatsappEventChannelName = "arifa/whatsapp_events"
     private val captureRequestCode = 1001
 
     companion object {
         private var eventSink: EventChannel.EventSink? = null
+        private var waEventSink: EventChannel.EventSink? = null
 
         fun emit(type: String, text: String) {
             eventSink?.success(mapOf("type" to type, "text" to text))
+        }
+
+        fun emitWhatsApp(type: String, payload: String) {
+            waEventSink?.success(mapOf("type" to type, "payload" to payload))
         }
     }
 
@@ -45,6 +52,17 @@ class MainActivity : FlutterActivity() {
 
                 override fun onCancel(arguments: Any?) {
                     eventSink = null
+                }
+            })
+
+        EventChannel(flutterEngine.dartExecutor.binaryMessenger, whatsappEventChannelName)
+            .setStreamHandler(object : EventChannel.StreamHandler {
+                override fun onListen(arguments: Any?, events: EventChannel.EventSink) {
+                    waEventSink = events
+                }
+
+                override fun onCancel(arguments: Any?) {
+                    waEventSink = null
                 }
             })
     }
@@ -76,6 +94,24 @@ class MainActivity : FlutterActivity() {
             "openAccessibilitySettings" -> result.success(openAccessibilitySettings())
             "clickSendButton" -> result.success(
                 if (ArifaAccessibilityService.instance?.clickSendButton() == true) "clicked" else "not found"
+            )
+            "configureWhatsAppAutoReply" -> result.success(configureWhatsApp(call))
+            "isNotificationAccessEnabled" -> result.success(notificationAccessEnabled())
+            "isAccessibilityEnabled" -> result.success(accessibilityEnabled())
+            "openNotificationAccessSettings" -> result.success(openNotificationAccessSettings())
+            "openWhatsAppChat" -> result.success(
+                ArifaNotificationListener.openChat(call.argument<String>("key").orEmpty())
+            )
+            "openWhatsApp" -> result.success(openApp("com.whatsapp"))
+            "typeWhatsAppReply" -> result.success(
+                if (ArifaAccessibilityService.instance?.typeAndSend(
+                        call.argument<String>("text").orEmpty(),
+                    ) == true
+                ) {
+                    "sent"
+                } else {
+                    "not found"
+                }
             )
             else -> result.notImplemented()
         }
@@ -234,5 +270,51 @@ class MainActivity : FlutterActivity() {
     private fun openAccessibilitySettings(): String {
         startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         return "accessibility settings"
+    }
+
+    // ---------- WhatsApp Auto Reply ----------
+
+    private fun configureWhatsApp(call: MethodCall): Boolean {
+        val enabled = call.argument<Boolean>("enabled") ?: false
+        val allow = call.argument<List<String>>("allowList") ?: emptyList()
+        val important = call.argument<List<String>>("importantContacts") ?: emptyList()
+        val prefs = getSharedPreferences(ArifaNotificationListener.PREFS, Context.MODE_PRIVATE)
+        prefs.edit()
+            .putBoolean("auto_reply_enabled", enabled)
+            .putString("allowed_contacts", allow.joinToString(","))
+            .putString("important_contacts", important.joinToString(","))
+            .apply()
+        return true
+    }
+
+    private fun notificationAccessEnabled(): Boolean {
+        val flat = Settings.Secure.getString(contentResolver, "enabled_notification_listeners").orEmpty()
+        return flat.split(":").any { entry ->
+            ComponentName.unflattenFromString(entry)?.packageName == packageName
+        }
+    }
+
+    private fun accessibilityEnabled(): Boolean {
+        if (Settings.Secure.getString(contentResolver, Settings.Secure.ACCESSIBILITY_ENABLED) != "1") {
+            return false
+        }
+        val expected = ComponentName(this, ArifaAccessibilityService::class.java).flattenToString()
+        return Settings.Secure
+            .getString(contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES)
+            .orEmpty()
+            .split(":")
+            .any { it.equals(expected, ignoreCase = true) }
+    }
+
+    private fun openNotificationAccessSettings(): Boolean {
+        return try {
+            startActivity(
+                Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS")
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            )
+            true
+        } catch (_: Exception) {
+            false
+        }
     }
 }

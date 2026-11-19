@@ -63,7 +63,10 @@ class VoiceService {
     await _tts.setSpeechRate(choice.rate);
 
     try {
-      final voices = await _tts.getVoices;
+      // getVoices returns Future<dynamic> in flutter_tts 4.x and can be null
+      // on some Android engines. Normalise it before using typed operators.
+      final rawVoices = await _tts.getVoices;
+      final voices = rawVoices is List ? rawVoices : const <dynamic>[];
       final localeVoices = voices.where((v) {
         final l = (v is Map ? v['locale'] : '').toString().toLowerCase();
         return l.startsWith(locale.split('-').first.toLowerCase());
@@ -160,8 +163,12 @@ class VoiceService {
       localeId: ArifaConstants.sttLocale,
       listenFor: listenFor ?? const Duration(seconds: 25),
       pauseFor: pauseFor ?? const Duration(seconds: 4),
+      // speech_to_text 7.0.0 still reads these deprecated fields internally.
+      // ignore: deprecated_member_use
       partialResults: true,
+      // ignore: deprecated_member_use
       cancelOnError: false,
+      // ignore: deprecated_member_use
       listenMode: ListenMode.confirmation,
     );
     return true;
@@ -203,6 +210,5 @@ class VoiceService {
     await _speakingController.close();
     await _heardController.close();
     await _wakeController.close();
-    _tts.dispose();
   }
 }

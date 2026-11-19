@@ -28,7 +28,7 @@ class BackgroundService {
 
   Future<void> listen() async {
     if (_sub != null) return;
-    _sub = _events!.listen(
+    _sub = _events.listen(
       _controller.add,
       onError: (Object e) => _controller.add(WakeEvent(text: '[native] $e')),
     );

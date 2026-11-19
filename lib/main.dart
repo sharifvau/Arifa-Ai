@@ -8,9 +8,9 @@ import 'package:share_plus/share_plus.dart';
 
 import 'apk_builder.dart';
 import 'arifa_avatar.dart';
+import 'auto_reply_service.dart';
 import 'arifa_brain.dart';
 import 'background_service.dart';
-import 'config.dart';
 import 'live_background.dart';
 import 'models.dart';
 import 'phone_control.dart';
@@ -22,6 +22,9 @@ import 'voice_service.dart';
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await SettingsService.instance.init();
+  // Start before the UI so allow-listed replies keep working even when the
+  // chat sheet is closed or the app is in the background.
+  await AutoReplyService.instance.init();
   runApp(const ArifaApp());
 }
 
@@ -72,6 +75,8 @@ class _ArifaHomeState extends State<ArifaHome>
   StreamSubscription<WakeEvent>? _wakeSub;
   StreamSubscription<bool>? _speakingSub;
   StreamSubscription<String>? _heardSub;
+  StreamSubscription<bool>? _waEnabledSub;
+  StreamSubscription<String>? _waStatusSub;
   Timer? _moodTimer;
 
   AvatarMood _mood = AvatarMood.happy;
@@ -80,6 +85,8 @@ class _ArifaHomeState extends State<ArifaHome>
   bool _listening = false;
   bool _busy = false;
   bool _serviceOn = false;
+  bool _waAutoReply = false;
+  String _waStatus = '';
   String _status = 'শুরু হচ্ছে...';
   GeneratedApp? _lastApp;
 
@@ -129,6 +136,14 @@ class _ArifaHomeState extends State<ArifaHome>
       _wakeSub = _native.events.listen(_onNativeEvent);
       await _syncWakeService();
 
+      _waAutoReply = AutoReplyService.instance.isEnabled;
+      _waEnabledSub = AutoReplyService.instance.enabledChanges.listen((v) {
+        if (mounted) setState(() => _waAutoReply = v);
+      });
+      _waStatusSub = AutoReplyService.instance.status.listen((s) {
+        if (mounted) setState(() => _waStatus = s);
+      });
+
       _addArifa('Ji Emon Bhai, bolen na, ki korbo apnar jonno? ♥');
       _setMood(
         AvatarMood.speaking,
@@ -150,11 +165,7 @@ class _ArifaHomeState extends State<ArifaHome>
     }
   }
 
-  void _setMood(
-    AvatarMood mood,
-    String caption, {
-    Duration? autoReset,
-  }) {
+  void _setMood(AvatarMood mood, String caption, {Duration? autoReset}) {
     if (!mounted) return;
     _moodTimer?.cancel();
     setState(() {
@@ -222,6 +233,7 @@ class _ArifaHomeState extends State<ArifaHome>
     if (saved == true) {
       await _voice.reloadVoice();
       await _syncWakeService();
+      await AutoReplyService.instance.refreshConfig();
       if (mounted) {
         setState(() {
           _status = _serviceOn
@@ -317,7 +329,9 @@ class _ArifaHomeState extends State<ArifaHome>
     );
     if (mounted) setState(() => _listening = started);
     if (!started) {
-      _addArifa('মাইক চালু হলো না। Settings-এ microphone permission দিও Emon Bhai।');
+      _addArifa(
+        'মাইক চালু হলো না। Settings-এ microphone permission দিও Emon Bhai।',
+      );
       _setMood(
         AvatarMood.error,
         'Sorry Emon Bhai, ami thik kore dicchi',
@@ -329,6 +343,14 @@ class _ArifaHomeState extends State<ArifaHome>
   Future<void> _handleCommand(String raw) async {
     final text = VoiceService.extractAfterWakeWord(raw).trim();
     if (text.isEmpty || _busy) return;
+
+    // Instant ON/OFF — no brain call, no "thinking" delay.
+    final waToggle = _whatsAppAutoReplyIntent(text);
+    if (waToggle != null) {
+      _addUser(raw);
+      await _setWhatsAppAutoReply(waToggle);
+      return;
+    }
 
     _addUser(raw);
     setState(() {
@@ -342,8 +364,7 @@ class _ArifaHomeState extends State<ArifaHome>
       final lower = text.toLowerCase();
       if (RegExp(r'screen|স্ক্রিন|screenshot|dekho|দেখ').hasMatch(lower)) {
         await _handleScreen();
-      } else if (RegExp(
-              r'apk|app|অ্যাপ|বানা|banaw|banao|build|কম্পাইল|compile')
+      } else if (RegExp(r'apk|app|অ্যাপ|বানা|banaw|banao|build|কম্পাইল|compile')
           .hasMatch(lower)) {
         await _handleBuild(text);
       } else if (RegExp(r'setting|সেটিং').hasMatch(lower)) {
@@ -383,6 +404,36 @@ class _ArifaHomeState extends State<ArifaHome>
         });
       }
     }
+  }
+
+  /// Recognizes "Arifa WhatsApp auto reply ON/OFF koro" and Bangla variants.
+  bool? _whatsAppAutoReplyIntent(String text) {
+    final lower = text.toLowerCase();
+    if (!RegExp(r'(auto|অটো)[\s_-]*(reply|রিপ্লাই)').hasMatch(lower)) {
+      return null;
+    }
+    if (RegExp(r'\boff\b|বন্ধ|বাতিল|ব্যাতিল|না\s*চাই').hasMatch(lower)) {
+      return false;
+    }
+    if (RegExp(r'\bon\b|চালু|অন\s*কোর').hasMatch(lower)) {
+      return true;
+    }
+    return null;
+  }
+
+  Future<void> _setWhatsAppAutoReply(bool on) async {
+    await AutoReplyService.instance.setEnabled(on);
+    _setMood(
+      on ? AvatarMood.success : AvatarMood.happy,
+      on ? 'WhatsApp Auto Reply ON ♥' : 'WhatsApp Auto Reply OFF',
+      autoReset: const Duration(seconds: 2),
+    );
+    final line = on
+        ? 'WhatsApp Auto Reply ON হয়ে গেছে Emon Bhai ♥ '
+              'Allow List-এ যাদের নাম দিয়েছি শুধু তাদেরই reply দিব।'
+        : 'WhatsApp Auto Reply OFF হয়ে গেছে Emon Bhai।';
+    _addArifa(line);
+    await _voice.speak(line);
   }
 
   Future<void> _handleScreen() async {
@@ -449,7 +500,8 @@ class _ArifaHomeState extends State<ArifaHome>
   }
 
   Future<void> _finishSourceBuild(BuildResult result) async {
-    final msg = 'Hoye geche Emon Bhai ♥\n'
+    final msg =
+        'Hoye geche Emon Bhai ♥\n'
         'কোড তৈরি + AI রিভিউ শেষ। Android ফোন নিজে APK build করতে পারে না, '
         'তাই source zip দিচ্ছি। Termux/PC-তে চালাও:\n'
         'flutter pub get\nflutter build apk --release\n\n'
@@ -475,20 +527,17 @@ class _ArifaHomeState extends State<ArifaHome>
         ),
       ),
     );
-    await Share.shareXFiles(
-      [XFile(result.zipPath)],
-      subject: 'ARIFA generated Flutter project',
-    );
+    await Share.shareXFiles([
+      XFile(result.zipPath),
+    ], subject: 'ARIFA generated Flutter project');
   }
 
   Future<void> _handleWhatsApp(String text) async {
     final clean = text
         .replaceFirst(RegExp(r'.*?(whatsapp|হোয়াটসঅ্যাপ)'), '')
         .trim();
-    final contact = RegExp(r'(\+?\d[\d\s-]{6,})')
-            .firstMatch(clean)
-            ?.group(1)
-            ?.trim() ??
+    final contact =
+        RegExp(r'(\+?\d[\d\s-]{6,})').firstMatch(clean)?.group(1)?.trim() ??
         clean.split(RegExp(r'\s(to|কে|\|)\s')).first;
     var message = clean.replaceFirst(contact, '').trim();
     if (message.isEmpty) message = 'Ji Emon Bhai, ARIFA থেকে বার্তা ♥';
@@ -587,6 +636,8 @@ class _ArifaHomeState extends State<ArifaHome>
     _wakeSub?.cancel();
     _speakingSub?.cancel();
     _heardSub?.cancel();
+    _waEnabledSub?.cancel();
+    _waStatusSub?.cancel();
     _voice.dispose();
     _native.dispose();
     _pulse.dispose();
@@ -607,14 +658,32 @@ class _ArifaHomeState extends State<ArifaHome>
                 _topBar(),
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 20),
-                  child: Text(
-                    _status,
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(
-                      color: Colors.cyanAccent,
-                      fontSize: 11,
-                      letterSpacing: 0.4,
-                    ),
+                  child: Column(
+                    children: [
+                      Text(
+                        _status,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                          color: Colors.cyanAccent,
+                          fontSize: 11,
+                          letterSpacing: 0.4,
+                        ),
+                      ),
+                      if (_waStatus.isNotEmpty)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 3),
+                          child: Text(
+                            _waStatus,
+                            textAlign: TextAlign.center,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              color: Colors.greenAccent,
+                              fontSize: 10,
+                            ),
+                          ),
+                        ),
+                    ],
                   ),
                 ),
                 const Spacer(),
@@ -672,6 +741,60 @@ class _ArifaHomeState extends State<ArifaHome>
           const Text(
             'Online',
             style: TextStyle(color: Colors.greenAccent, fontSize: 11),
+          ),
+          const SizedBox(width: 12),
+          GestureDetector(
+            onTap: () => _setWhatsAppAutoReply(!_waAutoReply),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+              decoration: BoxDecoration(
+                color: _waAutoReply
+                    ? Colors.green.withOpacity(0.12)
+                    : Colors.red.withOpacity(0.12),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(
+                  color: (_waAutoReply ? Colors.greenAccent : Colors.redAccent)
+                      .withOpacity(0.7),
+                ),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    width: 14,
+                    height: 14,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: _waAutoReply
+                          ? Colors.greenAccent
+                          : Colors.redAccent,
+                      boxShadow: [
+                        BoxShadow(
+                          color:
+                              (_waAutoReply
+                                      ? Colors.greenAccent
+                                      : Colors.redAccent)
+                                  .withOpacity(0.85),
+                          blurRadius: 12,
+                          spreadRadius: 3,
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  Text(
+                    _waAutoReply ? 'WA Reply ON' : 'WA Reply OFF',
+                    style: TextStyle(
+                      color: _waAutoReply
+                          ? Colors.greenAccent
+                          : Colors.redAccent,
+                      fontSize: 10,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ],
+              ),
+            ),
           ),
         ],
       ),
@@ -769,10 +892,7 @@ class _ArifaHomeState extends State<ArifaHome>
               color: const Color(0x99102846),
               border: Border.all(color: Colors.cyanAccent.withOpacity(0.55)),
               boxShadow: [
-                BoxShadow(
-                  color: Colors.cyan.withOpacity(0.22),
-                  blurRadius: 14,
-                ),
+                BoxShadow(color: Colors.cyan.withOpacity(0.22), blurRadius: 14),
               ],
             ),
             child: Icon(icon, color: Colors.cyanAccent, size: 23),
@@ -793,9 +913,7 @@ class _ArifaHomeState extends State<ArifaHome>
       isScrollControlled: true,
       backgroundColor: const Color(0xF4040D18),
       builder: (ctx) => Padding(
-        padding: EdgeInsets.only(
-          bottom: MediaQuery.of(ctx).viewInsets.bottom,
-        ),
+        padding: EdgeInsets.only(bottom: MediaQuery.of(ctx).viewInsets.bottom),
         child: SizedBox(
           height: MediaQuery.of(ctx).size.height * 0.86,
           child: Column(
@@ -831,6 +949,10 @@ class _ArifaHomeState extends State<ArifaHome>
                     _quickChip('WiFi on', 'Arifa wifi on'),
                     _quickChip('Play song', 'Arifa play Bangla hits'),
                     _quickChip('Open app', 'Arifa open YouTube'),
+                    _quickChip(
+                      _waAutoReply ? 'WA Reply OFF' : 'WA Reply ON',
+                      'Arifa WhatsApp auto reply ${_waAutoReply ? 'OFF' : 'ON'} koro',
+                    ),
                   ],
                 ),
               ),

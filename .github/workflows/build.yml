@@ -22,17 +22,23 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      # Flutter 3.24.0 ships Dart 3.5.0. pubspec.yaml and all pinned
-      # dependencies were chosen to match exactly this SDK.
-      - name: Set up Flutter 3.24.0
+      # Flutter 3.24.0 ships Dart 3.5.0. pubspec.yaml, the pinned plugins and
+      # the tracked Gradle files all match exactly this SDK.
+      - name: Set up Flutter 3.24.0 stable
         uses: subosito/flutter-action@v2
         with:
           channel: stable
           flutter-version: '3.24.0'
           cache: true
 
-      # This repo stores only ARIFA's custom Android files. bootstrap.sh
-      # generates the standard Gradle scaffold, then restores our sources.
+      - name: Print toolchain versions
+        run: |
+          flutter --version
+          java -version
+          git --version
+
+      # This repo stores only ARIFA's custom Android files plus the pinned
+      # Gradle config. bootstrap.sh generates the rest of the platform scaffold.
       - name: Generate Android platform files
         run: bash scripts/bootstrap.sh
 
@@ -42,25 +48,24 @@ jobs:
       - name: Flutter clean
         run: flutter clean
 
-      - name: Flutter pub get
-        run: flutter pub get
+      - name: Flutter pub get (verbose)
+        run: flutter pub get --verbose
 
-      # Style/lint info should not block an APK. Compile errors still fail
-      # the later build step.
+      # Analyzer failures are real build failures now. All Dart errors and
+      # warnings are fixed, and the complete output stays in the Actions log.
       - name: Flutter analyze
-        continue-on-error: true
         run: flutter analyze
 
       - name: Build APK (release, fallback to debug)
         id: apk
         shell: bash
         run: |
-          set +e
-
-          echo "::group::Release build"
-          flutter build apk --release
-          release_status=$?
-          echo "::endgroup::"
+          echo "=========================================================="
+          echo "RELEASE BUILD - full output below"
+          echo "=========================================================="
+          release_status=0
+          flutter build apk --release --verbose || release_status=$?
+          echo "RELEASE BUILD EXIT CODE: $release_status"
 
           if [ "$release_status" -eq 0 ]; then
             echo "apk_path=build/app/outputs/flutter-apk/app-release.apk" >> "$GITHUB_OUTPUT"
@@ -68,22 +73,36 @@ jobs:
             exit 0
           fi
 
-          echo "::warning::Release build failed (exit $release_status). Trying debug APK instead."
-          flutter clean
-          flutter pub get
+          echo "::warning::Release build failed (exit $release_status). Trying debug APK."
 
-          echo "::group::Debug build"
-          flutter build apk --debug
-          debug_status=$?
-          echo "::endgroup::"
+          flutter clean
+
+          echo "=========================================================="
+          echo "RE-DOWNLOAD DEPENDENCIES - full output below"
+          echo "=========================================================="
+          pub_status=0
+          flutter pub get --verbose || pub_status=$?
+          echo "PUB GET EXIT CODE: $pub_status"
+
+          echo "=========================================================="
+          echo "DEBUG BUILD - full output below"
+          echo "=========================================================="
+          debug_status=0
+          flutter build apk --debug --verbose || debug_status=$?
+          echo "DEBUG BUILD EXIT CODE: $debug_status"
 
           if [ "$debug_status" -ne 0 ]; then
-            echo "Debug build also failed (exit $debug_status)." >&2
+            echo "==========================================================" >&2
+            echo "BUILD FAILED - release AND debug both failed." >&2
+            echo "Release exit: $release_status | pub get exit: $pub_status | debug exit: $debug_status" >&2
+            echo "Read the complete error log above (nothing was suppressed)." >&2
+            echo "==========================================================" >&2
+            echo "::error::ARIFA APK build FAILED. Release exit=$release_status, pub get exit=$pub_status, debug exit=$debug_status. Full unfiltered log is printed above."
             exit "$debug_status"
           fi
 
           echo "apk_path=build/app/outputs/flutter-apk/app-debug.apk" >> "$GITHUB_OUTPUT"
-          echo "Debug APK built successfully."
+          echo "Debug APK built successfully (release build was not available)."
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4

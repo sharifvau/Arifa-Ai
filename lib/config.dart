@@ -16,4 +16,9 @@ class ArifaConstants {
       'https://openrouter.ai/api/v1/chat/completions';
   static const String openRouterModelsEndpoint =
       'https://openrouter.ai/api/v1/models';
+
+  /// Optional WhatsApp Business Cloud API. Only used when the user enables it
+  /// and supplies their own token + Phone Number ID in Settings.
+  static const String whatsappCloudEndpoint =
+      'https://graph.facebook.com/v21.0';
 }

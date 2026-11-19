@@ -55,13 +55,13 @@ class ArifaBrain {
       return BrainTask.vision;
     }
     if (RegExp(
-            r'apk|build|code|কোড|flutter|dart|app|বানা|banaw|banao|fix|bug|error|compile|project')
-        .hasMatch(t)) {
+      r'apk|build|code|কোড|flutter|dart|app|বানা|banaw|banao|fix|bug|error|compile|project',
+    ).hasMatch(t)) {
       return BrainTask.coding;
     }
     if (RegExp(
-            r'plan|planning|think|vision|long|depth|গভীর|বিশ্লেষ|strateg|roadmap|compare')
-        .hasMatch(t)) {
+      r'plan|planning|think|vision|long|depth|গভীর|বিশ্লেষ|strateg|roadmap|compare',
+    ).hasMatch(t)) {
       return BrainTask.deep;
     }
     return BrainTask.chat;
@@ -96,9 +96,65 @@ class ArifaBrain {
         errors.add('${model.name}: ${_short(e.toString())}');
       }
     }
-    throw BrainException(
-      'সব মডেল fail করেছে Emon Bhai। ${errors.join(' | ')}',
-    );
+    throw BrainException('সব মডেল fail করেছে Emon Bhai। ${errors.join(' | ')}');
+  }
+
+  /// Fast reply composer for WhatsApp Auto Reply. Only called when the user
+  /// explicitly enables "Use AI brain" in Settings, because the incoming
+  /// message text is sent to their configured provider. Time-boxed to ~1.1s
+  /// so a slow model never blocks the human-like local reply fallback.
+  Future<String> autoReply({
+    required String incomingMessage,
+    required String contact,
+    List<String> styleSamples = const [],
+  }) async {
+    final samples = styleSamples.take(6).join('\n');
+    final system =
+        '''
+তুমি Emon Bhai — একজন সাধারণ বাংলাদেশী ছেলে। তোমার বন্ধুর WhatsApp মেসেজের
+উত্তর লিখবে। Robot-এর মতো কথা বলবে না, ARIFA বা কোনো AI-র নাম বলবে না।
+ভাষা: Bangla + English মিক্স, ছোট এক লাইন, অনানুষ্ঠানিক, বন্ধুর সুর।
+সময়: ১-২ সেকেন্ডের মতো দ্রুত উত্তর। মাঝে মাঝে একটা emoji দিও, সবসময় নয়।
+কাজ/কোড/APK নিয়ে প্রশ্ন হলে বলবে: "Emon Bhai ektu busy ache, pore kotha bolbe, tumi ki bolte chao amake bolo ami pouche dibo"।
+শুধু reply টেক্সট দিও, কোনো ব্যাখ্যা বা quotation নয়।
+
+${samples.isEmpty ? '' : 'আমার আগের কথার স্টাইল (অনুকরণ করো):\n$samples'}
+''';
+
+    final usable =
+        _settings.defaultModel != null &&
+            _settings.defaultModel!.id.trim().isNotEmpty &&
+            _settings.hasKeyFor(_settings.defaultModel!.provider)
+        ? <ModelEntry>[_settings.defaultModel!]
+        : _settings.models
+              .where(
+                (m) =>
+                    m.id.trim().isNotEmpty && _settings.hasKeyFor(m.provider),
+              )
+              .take(1)
+              .toList();
+
+    if (usable.isEmpty) {
+      throw BrainException('দ্রুত Reply-র জন্য কোনো মডেল সেট করা নেই');
+    }
+
+    final text = await _call(
+      model: usable.first,
+      messages: [
+        {'role': 'system', 'content': system},
+        {
+          'role': 'user',
+          'content':
+              'Contact: $contact\nIncoming message: $incomingMessage\n\nReply:',
+        },
+      ],
+      jsonMode: false,
+      maxTokens: 100,
+    ).timeout(const Duration(milliseconds: 1100));
+
+    final clean = stripCodeBlocks(text).trim().replaceAll(RegExp(r'\s+'), ' ');
+    if (clean.isEmpty) throw BrainException('empty fast reply');
+    return clean.length > 220 ? clean.substring(0, 220) : clean;
   }
 
   Future<GeneratedApp> generateApp(
@@ -122,7 +178,8 @@ class ArifaBrain {
     } else {
       buf.writeln('Create a NEW minimal, dependency-light Flutter app.');
     }
-    buf.writeln('''
+    buf.writeln(
+      '''
 Return STRICT JSON only, no markdown:
 {"name":"snake_case_project","summary":"one Bangla line","files":[{"path":"pubspec.yaml","content":"..."},{"path":"lib/main.dart","content":"..."}, ...]}
 Rules:
@@ -130,14 +187,16 @@ Rules:
 - Use only flutter, dart:*, http if truly needed. No other packages.
 - Code must compile on latest Flutter 3.x / Dart 3.x with Material 3.
 - No network calls at startup. No unused imports. No `const` with non-const values.
-'''.trim());
+'''
+          .trim(),
+    );
 
     final messages = [
       {'role': 'system', 'content': persona},
       {
         'role': 'user',
         'content':
-            'You are a senior Flutter engineer. Produce a complete working app.\n${buf.toString()}'
+            'You are a senior Flutter engineer. Produce a complete working app.\n${buf.toString()}',
       },
     ];
 
@@ -193,9 +252,7 @@ Rules:
   /// then every other usable row. Order comes entirely from the saved catalog.
   List<ModelEntry> _modelsFor(BrainTask task) {
     final usable = _settings.models
-        .where(
-          (m) => m.id.trim().isNotEmpty && _settings.hasKeyFor(m.provider),
-        )
+        .where((m) => m.id.trim().isNotEmpty && _settings.hasKeyFor(m.provider))
         .toList();
 
     if (usable.isEmpty) {
@@ -388,7 +445,11 @@ Rules:
     }
 
     final body = <String, dynamic>{
-      'system_instruction': {'parts': [{'text': system}]},
+      'system_instruction': {
+        'parts': [
+          {'text': system},
+        ],
+      },
       'contents': contents,
       'generationConfig': {
         'temperature': jsonMode ? 0.1 : 0.7,
@@ -401,7 +462,7 @@ Rules:
         .post(
           Uri.parse(
             '${ArifaConstants.geminiEndpoint}/'
-            '${Uri.encodePathSegment(cleanModel)}:generateContent'
+            '${Uri.encodeComponent(cleanModel)}:generateContent'
             '?key=${Uri.encodeQueryComponent(key)}',
           ),
           headers: {'Content-Type': 'application/json'},
@@ -466,10 +527,11 @@ flutter:
       );
     }
     if (!has('lib/main.dart')) {
-      files.add(const CodeBlock(
-        path: 'lib/main.dart',
-        language: 'dart',
-        content: '''import 'package:flutter/material.dart';
+      files.add(
+        const CodeBlock(
+          path: 'lib/main.dart',
+          language: 'dart',
+          content: '''import 'package:flutter/material.dart';
 void main() => runApp(const GeneratedApp());
 class GeneratedApp extends StatelessWidget {
   const GeneratedApp({super.key});
@@ -479,7 +541,8 @@ class GeneratedApp extends StatelessWidget {
   );
 }
 ''',
-      ));
+        ),
+      );
     }
     return GeneratedApp(name: app.name, summary: app.summary, files: files);
   }
@@ -503,8 +566,9 @@ class GeneratedApp extends StatelessWidget {
   String stripCodeBlocks(String text) =>
       text.replaceAll(RegExp(r'```[\s\S]*?```'), '').trim();
 
-  String _trimForPrompt(String text, {int limit = 12000}) =>
-      text.length > limit ? '${text.substring(0, limit)}\n...[truncated]' : text;
+  String _trimForPrompt(String text, {int limit = 12000}) => text.length > limit
+      ? '${text.substring(0, limit)}\n...[truncated]'
+      : text;
 
   String _ext(String lang) {
     switch (lang) {

@@ -1,6 +1,10 @@
 package com.example.arifa
 
 import android.accessibilityservice.AccessibilityService
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.os.Bundle
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 
@@ -24,13 +28,55 @@ class ArifaAccessibilityService : AccessibilityService() {
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
     override fun onInterrupt() {}
 
+    /** Types a reply into WhatsApp's composer and taps Send. */
+    fun typeAndSend(text: String): Boolean {
+        if (text.isEmpty()) return false
+        val root = rootInActiveWindow ?: return false
+        val input = findEditable(root) ?: return false
+        var typed = false
+        try {
+            val args = Bundle().apply {
+                putCharSequence(
+                    AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
+                    text,
+                )
+            }
+            typed = input.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+            if (!typed) {
+                val clipboard = applicationContext.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                clipboard.setPrimaryClip(ClipData.newPlainText("arifa_reply", text))
+                typed = input.performAction(AccessibilityNodeInfo.ACTION_PASTE)
+            }
+        } catch (_: Exception) {
+            typed = false
+        } finally {
+            try { input.recycle() } catch (_: Exception) {}
+        }
+        if (!typed) return false
+        return clickSendButton()
+    }
+
     fun clickSendButton(): Boolean {
         val root = rootInActiveWindow ?: return false
-        val targets = listOf("send", "পাঠান", "প্রেরণ", "send button", "Ok", "Permit")
+        val targets = listOf(
+            "send", "send button", "পাঠান", "প্রেরণ", "Ok", "Permit",
+        )
         val node = findClickable(root, targets) ?: return false
         val ok = node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
         node.recycle()
         return ok
+    }
+
+    private fun findEditable(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        val cls = node.className?.toString().orEmpty()
+        if ((cls.contains("EditText") || node.isEditable) && node.isEnabled) return node
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            val found = findEditable(child)
+            if (found != null) return found
+            try { child.recycle() } catch (_: Exception) {}
+        }
+        return null
     }
 
     fun tapWifiSwitch(): Boolean {
