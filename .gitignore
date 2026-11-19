@@ -1,0 +1,31 @@
+# Flutter / Dart
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub-cache/
+.pub/
+build/
+
+# Local config and secrets — never commit these
+.env
+.env.*
+*.key
+*.jks
+*.keystore
+android/local.properties
+android/app/debug.keystore
+
+# Generated Gradle files (created by scripts/bootstrap.sh on CI)
+android/.gradle/
+android/app/.cxx/
+android/build/
+android/app/build/
+.cxx/
+
+# Editors / OS
+.idea/
+.vscode/
+*.iml
+.DS_Store
+*.log

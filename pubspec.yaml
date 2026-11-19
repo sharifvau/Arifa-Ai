@@ -1,0 +1,41 @@
+name: arifa
+description: "ARIFA - a cute, friendly Bangladeshi AI assistant for Emon Bhai."
+publish_to: "none"
+version: 1.0.0+1
+
+environment:
+  sdk: ">=3.8.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # Core
+  http: ^1.6.0
+  archive: ^4.7.1
+  path_provider: ^2.1.6
+  share_plus: ^13.3.1
+  cross_file: ^0.3.5+2
+  file_picker: ^10.3.10
+
+  # Encrypted on-device settings. No key is stored in source code or assets.
+  flutter_secure_storage: ^11.2.0
+
+  # Voice
+  flutter_tts: ^4.2.5
+  speech_to_text: ^7.5.0
+
+  # Background + notifications
+  flutter_local_notifications: ^23.0.3
+  permission_handler: ^13.0.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    # Editable seed only. The live list is saved in secure storage.
+    - models.json

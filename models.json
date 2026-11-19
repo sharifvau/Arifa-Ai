@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 1,
+  "defaultKey": "starter_gemini",
+  "models": [
+    {
+      "key": "starter_gemini",
+      "name": "Gemini Latest",
+      "id": "",
+      "provider": "gemini",
+      "supportsVision": true,
+      "starter": true
+    },
+    {
+      "key": "starter_claude",
+      "name": "Claude Latest",
+      "id": "",
+      "provider": "openRouter",
+      "supportsVision": true,
+      "starter": true
+    },
+    {
+      "key": "starter_gpt",
+      "name": "GPT Latest",
+      "id": "",
+      "provider": "openRouter",
+      "supportsVision": true,
+      "starter": true
+    },
+    {
+      "key": "starter_kimi",
+      "name": "Kimi Latest",
+      "id": "",
+      "provider": "openRouter",
+      "supportsVision": true,
+      "starter": true
+    },
+    {
+      "key": "starter_qwen",
+      "name": "Qwen Latest",
+      "id": "",
+      "provider": "openRouter",
+      "supportsVision": true,
+      "starter": true
+    }
+  ]
+}
