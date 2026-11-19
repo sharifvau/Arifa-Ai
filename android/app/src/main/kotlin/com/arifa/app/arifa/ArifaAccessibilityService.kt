@@ -32,6 +32,11 @@ class ArifaAccessibilityService : AccessibilityService() {
     fun typeAndSend(text: String): Boolean {
         if (text.isEmpty()) return false
         val root = rootInActiveWindow ?: return false
+        // Never type a reply into whatever app happens to be foreground.
+        val foreground = root.packageName?.toString().orEmpty()
+        if (foreground != "com.whatsapp" && foreground != "com.whatsapp.w4b") {
+            return false
+        }
         val input = findEditable(root) ?: return false
         var typed = false
         try {
@@ -58,6 +63,10 @@ class ArifaAccessibilityService : AccessibilityService() {
 
     fun clickSendButton(): Boolean {
         val root = rootInActiveWindow ?: return false
+        val foreground = root.packageName?.toString().orEmpty()
+        if (foreground != "com.whatsapp" && foreground != "com.whatsapp.w4b") {
+            return false
+        }
         val targets = listOf(
             "send", "send button", "পাঠান", "প্রেরণ", "Ok", "Permit",
         )

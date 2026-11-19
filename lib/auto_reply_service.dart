@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
+import 'allow_list.dart';
 import 'arifa_brain.dart';
 import 'notification_listener.dart';
 import 'settings_service.dart';
@@ -160,6 +161,11 @@ class AutoReplyService {
   /// Instant ON/OFF from the home dot, Settings switch or voice command.
   Future<void> setEnabled(bool value) async {
     await SettingsService.instance.setWhatsAppEnabled(value);
+    if (!value) {
+      // Messages left in the queue must not resurface as delayed duplicates
+      // after the user turned auto reply back on (AUDIT M25).
+      _queue.clear();
+    }
     await refreshConfig();
     if (!_statusCtrl.isClosed) {
       _statusCtrl.add(
@@ -203,9 +209,14 @@ class AutoReplyService {
 
   void _queueMessage(IncomingWhatsAppMessage msg) {
     if (!isEnabled || !_canReply(msg.contact)) return;
+    if (_listener.wasSent(msg.notificationKey)) return;
 
-    final fingerprint =
-        '${msg.contact}|${msg.message}|${msg.receivedAt.millisecondsSinceEpoch ~/ 1000}';
+    // Prefer the platform notification key (stable, unique) over a timestamp
+    // fingerprint, which changed after one second and allowed duplicates.
+    final fingerprint = msg.notificationKey.isNotEmpty
+        ? 'key:${msg.notificationKey}'
+        : '${msg.contact}|${msg.message}|'
+            '${msg.receivedAt.millisecondsSinceEpoch ~/ 60000}';
     if (_recent.contains(fingerprint)) return;
     _recent.add(fingerprint);
     if (_recent.length > 80) _recent.removeAt(0);
@@ -223,9 +234,10 @@ class AutoReplyService {
       final msg = _queue.removeAt(0);
       try {
         await _handleMessage(msg);
-      } catch (e) {
+      } catch (_) {
+        // Fixed, short status — raw exception/body text must not reach the UI.
         if (!_statusCtrl.isClosed) {
-          _statusCtrl.add('WhatsApp reply error: $e');
+          _statusCtrl.add('WhatsApp reply error — try again Emon Bhai');
         }
       }
     }
@@ -254,8 +266,13 @@ class AutoReplyService {
     String? cloudRecipient;
     for (final entry in s.whatsappAllowList) {
       if (_matches(entry, msg.contact)) {
-        cloudRecipient = _asInternationalNumber(entry);
-        break;
+        final number = _asInternationalNumber(entry);
+        // Keep looking: an earlier name-only match must not hide a later
+        // entry that actually carries a number (AUDIT M16).
+        if (number.isNotEmpty) {
+          cloudRecipient = number;
+          break;
+        }
       }
     }
 
@@ -273,8 +290,10 @@ class AutoReplyService {
       AutoReplyLogEntry(
         id: DateTime.now().microsecondsSinceEpoch.toString(),
         contact: msg.contact,
-        incoming: msg.message,
-        reply: decision.reply,
+        // Bound retained message content: the on-device log is a preview, not
+        // an archive of private conversations (AUDIT M17).
+        incoming: _logText(msg.message),
+        reply: _logText(decision.reply),
         at: DateTime.now(),
         sent: outcome.ok,
         channel: outcome.channel,
@@ -283,6 +302,7 @@ class AutoReplyService {
       ),
     );
     await _persistLogs();
+    if (outcome.ok) await _listener.markSent(msg.notificationKey);
 
     if (!_statusCtrl.isClosed) {
       _statusCtrl.add(
@@ -441,29 +461,20 @@ class AutoReplyService {
     return false;
   }
 
-  /// Exact match only — 'Ali' must never match 'Alina'. '*' is the sole
-  /// wildcard. Phone numbers ignore formatting so +880 1712-345678 and
-  /// 01712345678 are treated as the same contact.
-  bool _matches(String entry, String contact) {
-    final a = _normalize(entry);
-    final b = _normalize(contact);
-    if (a.isEmpty || b.isEmpty) return false;
-    if (a == '*') return true;
-    return a == b;
+  /// Exact match only — 'Ali' must never match 'Alina'. There is deliberately
+  /// no wildcard: unknown senders are a separate, explicit Settings switch.
+  /// Phone numbers ignore formatting so +880 1712-345678 and 01712345678 are
+  /// treated as the same contact. The pure logic lives in allow_list.dart so
+  /// it can be unit tested without platform channels.
+  bool _matches(String entry, String contact) =>
+      matchesAllowListEntry(entry, contact);
+
+  String _logText(String value) {
+    const max = 200;
+    return value.length <= max ? value : '${value.substring(0, max)}…';
   }
 
-  String _normalize(String value) {
-    final trimmed = value.trim().toLowerCase();
-    if (trimmed.isEmpty) return '';
-    final digits = trimmed.replaceAll(RegExp(r'[^0-9]'), '');
-    if (digits.length >= 7 && RegExp(r'^[+\d\s().-]+$').hasMatch(trimmed)) {
-      if (digits.length == 11 && digits.startsWith('0')) {
-        return '880${digits.substring(1)}';
-      }
-      return digits;
-    }
-    return trimmed.replaceAll(RegExp(r'\s+'), ' ');
-  }
+  String _normalize(String value) => normalizeContact(value);
 
   /// At most [_maxRepliesPerWindow] replies per contact in any rolling
   /// [_rateWindow]. Normalized keys stop formatting tricks bypassing it.
@@ -475,7 +486,14 @@ class AutoReplyService {
     if (times.length >= _maxRepliesPerWindow) return true;
     times.add(now);
     if (_replyTimes.length > 100) {
-      _replyTimes.removeWhere((_, value) => value.isEmpty);
+      // Evict the oldest entry; removeWhere(value.isEmpty) never matched
+      // because every value has just been given a timestamp (AUDIT M14).
+      for (final k in _replyTimes.keys.toList(growable: false)) {
+        if (_replyTimes[k]?.isNotEmpty ?? false) {
+          _replyTimes.remove(k);
+          break;
+        }
+      }
     }
     return false;
   }

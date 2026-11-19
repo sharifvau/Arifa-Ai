@@ -14,12 +14,17 @@ extension ModelProviderX on ModelProvider {
         ModelProvider.openRouter => 'OpenRouter',
       };
 
-  static ModelProvider fromWire(String raw) {
+  /// Returns null for unknown values so callers can reject them instead of
+  /// silently sending an imported row to the wrong provider (AUDIT M3).
+  static ModelProvider? fromWire(String raw) {
     final v = raw.trim().toLowerCase();
     if (v == 'gemini' || v == 'google' || v == 'native') {
       return ModelProvider.gemini;
     }
-    return ModelProvider.openRouter;
+    if (v == 'openrouter' || v == 'open_router' || v == 'open router') {
+      return ModelProvider.openRouter;
+    }
+    return null;
   }
 }
 
@@ -37,7 +42,7 @@ class ModelEntry {
     required this.name,
     required this.id,
     required this.provider,
-    this.supportsVision = true,
+    this.supportsVision = false,
     this.starter = false,
   });
 
@@ -77,17 +82,21 @@ class ModelEntry {
     final key = rawKey.isEmpty
         ? 'm_${name.hashCode.abs()}_${id.hashCode.abs()}'
         : rawKey;
+    final rawProvider = _str(j, const ['provider', 'api', 'source']);
+    final provider = ModelProviderX.fromWire(rawProvider);
+    if (provider == null) {
+      throw FormatException('Unknown model provider: "$rawProvider"');
+    }
     return ModelEntry(
       key: key,
       name: name.isEmpty ? id : name,
       id: id,
-      provider: ModelProviderX.fromWire(
-        _str(j, const ['provider', 'api', 'source']),
-      ),
+      provider: provider,
+      // Unknown/imported models are text-only until the user opts in (M4).
       supportsVision: _bool(
         j,
         const ['supportsVision', 'vision'],
-        fallback: true,
+        fallback: false,
       ),
       starter: _bool(j, const ['starter', 'builtIn'], fallback: false),
     );

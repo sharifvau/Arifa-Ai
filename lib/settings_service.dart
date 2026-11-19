@@ -58,6 +58,7 @@ class SettingsService {
   static const _kOnboarded = 'setup_done';
   static const _kModels = 'model_catalog_v1';
   static const _kModelsSeed = 'model_catalog_seed_version';
+  static const _kModelsCorrupt = 'model_catalog_corrupt_backup';
 
   // WhatsApp Auto Reply — also encrypted, never a plain file.
   static const _kWaEnabled = 'whatsapp_auto_reply_enabled';
@@ -97,6 +98,9 @@ class SettingsService {
   List<ModelEntry> models = const [];
   String defaultModelKey = '';
   int _seedVersion = 1;
+
+  /// Set when a corrupt stored catalog was backed up and seed rows restored.
+  String catalogWarning = '';
 
   ModelEntry? get defaultModel {
     for (final m in models) {
@@ -175,22 +179,37 @@ class SettingsService {
 
   Future<void> _loadModels() async {
     final raw = await _storage.read(key: _kModels);
+    final seed = await _readSeed();
+    catalogWarning = '';
 
     if (raw == null || raw.trim().isEmpty) {
-      await saveCatalog(await _readSeed());
+      // Never persist an empty seed: a transient asset/read failure must not
+      // permanently erase the catalog and bump the seed version (AUDIT H11).
+      if (seed.models.isEmpty) {
+        _apply(ModelCatalog.empty());
+        return;
+      }
+      await saveCatalog(seed);
       return;
     }
 
     ModelCatalog current;
+    var corrupt = false;
     try {
       current = ModelCatalog.decode(raw);
     } catch (_) {
+      // Preserve the bad value for diagnosis and force a seed merge (M1).
+      try {
+        await _storage.write(key: _kModelsCorrupt, value: raw);
+      } catch (_) {}
       current = ModelCatalog.empty();
+      corrupt = true;
+      catalogWarning = 'মডেল তালিকা খারাপ হয়েছিল — seed মডেলগুলো ফেরত আনা হয়েছে।';
     }
 
-    final storedVersion =
-        int.tryParse(await _storage.read(key: _kModelsSeed) ?? '') ?? 0;
-    final seed = await _readSeed();
+    final storedVersion = corrupt
+        ? 0
+        : int.tryParse(await _storage.read(key: _kModelsSeed) ?? '') ?? 0;
 
     if (seed.schemaVersion > storedVersion && seed.models.isNotEmpty) {
       final merged = current.mergeMissing(seed);
@@ -230,7 +249,33 @@ class SettingsService {
     defaultKey: defaultModelKey,
   );
 
+  /// Imported/stored catalogs must be bounded and internally consistent (M2).
+  void _validateCatalog(ModelCatalog catalog) {
+    if (catalog.schemaVersion < 1 || catalog.schemaVersion > 1000) {
+      throw const FormatException('Catalog-এর schemaVersion অবৈধ Emon Bhai।');
+    }
+    if (catalog.models.length > 200) {
+      throw const FormatException('Catalog-এ ২০০-এর বেশি মডেল আছে Emon Bhai।');
+    }
+    final keys = <String>{};
+    for (final m in catalog.models) {
+      if (m.key.trim().isEmpty) {
+        throw const FormatException('একটা মডেলের key খালি আছে Emon Bhai।');
+      }
+      if (!keys.add(m.key)) {
+        throw FormatException('Duplicate model key: ${m.key}');
+      }
+      if (m.id.trim().isEmpty && !m.starter) {
+        throw FormatException('${m.name}-এর Model ID দেওয়া নেই Emon Bhai।');
+      }
+    }
+    if (catalog.defaultKey.isNotEmpty && !keys.contains(catalog.defaultKey)) {
+      throw const FormatException('Default model-টি Catalog-এ নেই Emon Bhai।');
+    }
+  }
+
   Future<void> saveCatalog(ModelCatalog catalog) async {
+    _validateCatalog(catalog);
     await _storage.write(key: _kModels, value: catalog.encode());
     await _storage.write(
       key: _kModelsSeed,
@@ -244,6 +289,7 @@ class SettingsService {
     if (catalog.models.isEmpty) {
       throw const FormatException('models.json-এ কোনো মডেল নেই Emon Bhai।');
     }
+    _validateCatalog(catalog);
     await saveCatalog(catalog);
   }
 

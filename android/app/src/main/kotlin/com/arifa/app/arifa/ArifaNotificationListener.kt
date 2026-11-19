@@ -98,11 +98,18 @@ class ArifaNotificationListener : NotificationListenerService() {
         val allowed = p.getString("allowed_contacts", "").orEmpty()
             .split(",")
             .map { it.trim().lowercase() }
-            .filter { it.isNotEmpty() }
-        if (allowed.isEmpty()) return
+            .filter { it.isNotEmpty() && it != "*" }
+        // Unknown senders are a separate explicit preference, never a wildcard.
+        val replyUnknown = p.getBoolean("reply_unknown", false)
+        if (allowed.isEmpty() && !replyUnknown) return
 
         val n = notification.notification
         if ((n.flags and Notification.FLAG_GROUP_SUMMARY) != 0) return
+        // Group conversations have no separate allow-list: never auto-reply in
+        // a group where every member can see the answer (AUDIT M15).
+        @Suppress("DEPRECATION")
+        val isGroup = n.extras.getBoolean("android.isGroupConversation", false)
+        if (isGroup) return
 
         val extras = n.extras
         val title = (extras.getCharSequence(Notification.EXTRA_CONVERSATION_TITLE)
@@ -117,7 +124,7 @@ class ArifaNotificationListener : NotificationListenerService() {
         if (lowerText.contains("typing") || (lowerText.contains("...") && text.length < 8)) return
 
         val normalizedTitle = normalize(title)
-        if (!allowed.any { it == "*" || normalize(it) == normalizedTitle }) return
+        if (!replyUnknown && !allowed.any { normalize(it) == normalizedTitle }) return
 
         n.contentIntent?.let { pending[notification.key] = it }
 

@@ -18,7 +18,7 @@ class LiveBackground extends StatefulWidget {
 }
 
 class _LiveBackgroundState extends State<LiveBackground>
-    with TickerProviderStateMixin {
+    with TickerProviderStateMixin, WidgetsBindingObserver {
   late final AnimationController _flow = AnimationController(
     vsync: this,
     duration: const Duration(seconds: 14),
@@ -34,6 +34,7 @@ class _LiveBackgroundState extends State<LiveBackground>
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     final rnd = math.Random(42);
     _stars = List.generate(
       110,
@@ -48,7 +49,23 @@ class _LiveBackgroundState extends State<LiveBackground>
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Stop both full-screen loops while the app is backgrounded/hidden so an
+    // obscured screen costs no battery (AUDIT H17).
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.hidden ||
+        state == AppLifecycleState.detached) {
+      if (_flow.isAnimating) _flow.stop();
+      if (_bars.isAnimating) _bars.stop();
+    } else if (state == AppLifecycleState.resumed) {
+      if (!_flow.isAnimating) _flow.repeat();
+      if (!_bars.isAnimating) _bars.repeat(reverse: true);
+    }
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _flow.dispose();
     _bars.dispose();
     super.dispose();
@@ -197,5 +214,9 @@ class _GalaxyPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(covariant _GalaxyPainter oldDelegate) => true;
+  bool shouldRepaint(covariant _GalaxyPainter oldDelegate) =>
+      oldDelegate.flow != flow ||
+      oldDelegate.bars != bars ||
+      oldDelegate.speaking != speaking ||
+      oldDelegate.listening != listening;
 }

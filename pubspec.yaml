@@ -4,8 +4,8 @@ publish_to: none
 version: 1.0.0+1
 
 # Flutter 3.24.0 stable ships Dart 3.5.0. Every direct pin below is from that
-# era, so no package drags in AGP 8.6+/Kotlin 2.x/compileSdk 35 or any
-# Windows-only implementation. No API key or model version is bundled here.
+# era, so no package drags in AGP 8.6+/Kotlin 2.x/compileSdk 35. No API key or
+# model version is bundled here.
 environment:
   sdk: ">=3.5.0 <4.0.0"
 
@@ -13,7 +13,7 @@ dependencies:
   flutter:
     sdk: flutter
 
-  # 8.1.0 is the last line whose federated Windows stub needs no Windows FFI shim.
+  # Android-compatible pin kept per the Flutter 3.24 toolchain constraint.
   flutter_secure_storage: 8.1.0
   http: 1.2.2
   shared_preferences: 2.2.3

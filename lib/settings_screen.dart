@@ -34,6 +34,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final _waPhoneId = TextEditingController();
   final _waStyle = TextEditingController();
   final _waImportant = TextEditingController();
+  Timer? _waTextDebounce;
   StreamSubscription<List<AutoReplyLogEntry>>? _waLogSub;
 
   late bool _waEnabled;
@@ -53,6 +54,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   ModelProvider? _customProvider; // null = auto-detect from the ID
   bool _obscureGemini = true;
   bool _obscureRouter = true;
+  bool _obscureWaToken = true;
   bool _saving = false;
   bool _fetching = false;
   List<Map<String, String>> _fetched = const [];
@@ -99,6 +101,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _waToken.dispose();
     _waPhoneId.dispose();
     _waStyle.dispose();
+    _waTextDebounce?.cancel();
     _waImportant.dispose();
     super.dispose();
   }
@@ -210,7 +213,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         name: id,
         id: id,
         provider: provider,
-        supportsVision: true,
+        supportsVision: false,
       ),
       setDefault: true,
     );
@@ -223,7 +226,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final nameC = TextEditingController(text: existing?.name ?? '');
     final idC = TextEditingController(text: existing?.id ?? '');
     var provider = existing?.provider ?? ModelProvider.openRouter;
-    var vision = existing?.supportsVision ?? true;
+    var vision = existing?.supportsVision ?? false;
 
     final result = await showDialog<ModelEntry>(
       context: context,
@@ -460,7 +463,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                 name: m['name']!,
                                 id: m['id']!,
                                 provider: ModelProvider.openRouter,
-                                supportsVision: true,
+                                supportsVision: false,
                               ),
                             );
                             if (ctx.mounted) Navigator.pop(ctx);
@@ -744,6 +747,23 @@ class _SettingsScreenState extends State<SettingsScreen> {
     unawaited(_persistWa());
   }
 
+  /// The card promises "no Save needed" — debounce and persist text edits.
+  void _scheduleWaTextPersist() {
+    _waTextDebounce?.cancel();
+    _waTextDebounce = Timer(const Duration(milliseconds: 400), () {
+      unawaited(_persistWa());
+    });
+  }
+
+  void _onWaImportantChanged(String value) {
+    _waImportantList = value
+        .split(',')
+        .map((e) => e.trim())
+        .where((e) => e.isNotEmpty)
+        .toList();
+    _scheduleWaTextPersist();
+  }
+
   Widget _whatsAppCard() {
     final listener = AutoReplyService.instance.notificationListener;
     return Card(
@@ -859,7 +879,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             const SizedBox(height: 6),
             const Text(
               'এই নাম/নম্বর ছাড়া কোনো মেসেজ পড়া বা reply দেওয়া হবে না। '
-              '"*" দিলে সবাইকে reply দিবে (unknown line সহ)।',
+              'অচেনা মানুষের জন্য নিচের "Unknown person" সুইচ ব্যবহার করো।',
               style: TextStyle(color: Colors.white38, fontSize: 10),
             ),
             const SizedBox(height: 8),
@@ -1011,13 +1031,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               controller: _waImportant,
               label: 'Important contacts (comma separated)',
               hint: 'Ammu, Family',
-              onChanged: (v) {
-                _waImportantList = v
-                    .split(',')
-                    .map((e) => e.trim())
-                    .where((e) => e.isNotEmpty)
-                    .toList();
-              },
+              onChanged: _onWaImportantChanged,
             ),
             const SizedBox(height: 4),
             SwitchListTile(
@@ -1079,16 +1093,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
               },
             ),
             const SizedBox(height: 8),
-            _waInput(
+            _keyField(
               controller: _waToken,
               label: 'Business Cloud Token',
               hint: 'optional',
+              obscure: _obscureWaToken,
+              onToggle: () =>
+                  setState(() => _obscureWaToken = !_obscureWaToken),
+              onChanged: (_) => _scheduleWaTextPersist(),
             ),
             const SizedBox(height: 8),
             _waInput(
               controller: _waPhoneId,
               label: 'Phone Number ID',
               hint: 'optional',
+              onChanged: (_) => _scheduleWaTextPersist(),
             ),
             const SizedBox(height: 14),
             Row(
@@ -1506,12 +1525,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
     required String hint,
     required bool obscure,
     required VoidCallback onToggle,
+    ValueChanged<String>? onChanged,
   }) {
     return TextField(
       controller: controller,
       obscureText: obscure,
       autocorrect: false,
       enableSuggestions: false,
+      onChanged: onChanged,
       style: const TextStyle(color: Colors.white),
       decoration: InputDecoration(
         labelText: label,

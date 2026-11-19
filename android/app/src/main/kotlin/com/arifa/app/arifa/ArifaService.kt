@@ -68,6 +68,17 @@ class ArifaService : Service() {
     private var recognizer: SpeechRecognizer? = null
     private var handler: Handler? = null
     private var thread: HandlerThread? = null
+    // SpeechRecognizer APIs must be called on the application's main thread.
+    private val mainHandler = Handler(Looper.getMainLooper())
+    // Exponential backoff for recognizer restarts; capped to avoid a hot loop.
+    private var restartDelayMs = 900L
+    // Guards against multiple wake emissions from repeated partial results.
+    @Volatile
+    private var wakeFired = false
+    // One capture at a time: MainActivity has a single pending MethodChannel
+    // result slot, so a second request would orphan the first (AUDIT M28).
+    @Volatile
+    private var captureInProgress = false
     private val wakeWords = listOf("arifa", "আরিফা", "আরিফা ", "arifa,")
 
     override fun onCreate() {
@@ -80,13 +91,71 @@ class ArifaService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_CAPTURE) {
-            startFg(ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION, "স্ক্রিন ধরছি Emon Bhai...")
+            if (captureInProgress) {
+                finishCapture(null)
+                stopSelf()
+                return START_NOT_STICKY
+            }
+            captureInProgress = true
+            // Screen capture uses only the mediaProjection FGS type. Pause any
+            // microphone recognition first so the declared type matches actual
+            // use (Android 14 type-specific while-in-use rules).
+            stopWakeListening()
+            if (!startFgSafe(
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION,
+                    "স্ক্রিন ধরছি Emon Bhai...",
+                )
+            ) {
+                captureInProgress = false
+                finishCapture(null)
+                stopSelf()
+                return START_NOT_STICKY
+            }
             captureScreen(intent)
-        } else {
-            startFg(ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE, "Emon Bhai-র জন্য শুনছি ♥")
-            startWakeListening()
+            return START_NOT_STICKY
         }
-        return START_STICKY
+
+        // A null intent is delivered on a sticky restart. Respect the saved
+        // wake flag instead of silently resuming always-on microphone capture.
+        val wakeEnabled = getSharedPreferences(
+            ArifaNotificationListener.PREFS,
+            Context.MODE_PRIVATE,
+        ).getBoolean("wake_enabled", true)
+        if (!wakeEnabled) {
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            MainActivity.emit("permission", "RECORD_AUDIO permission নেই Emon Bhai")
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        if (!startFgSafe(
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE,
+                "Emon Bhai-র জন্য শুনছি ♥",
+            )
+        ) {
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        startWakeListening()
+        // Do not request a sticky restart: BootReceiver is the single,
+        // user-aware entry point after process death.
+        return START_NOT_STICKY
+    }
+
+    /** Starts foreground safely; returns false on permission/start failure. */
+    private fun startFgSafe(type: Int, text: String): Boolean {
+        return try {
+            startFg(type, text)
+            true
+        } catch (e: Exception) {
+            Log.e("ArifaService", "startForeground failed", e)
+            MainActivity.emit("service", "সার্ভিস চালু হলো না Emon Bhai")
+            false
+        }
     }
 
     private fun startFg(type: Int, text: String) {
@@ -96,6 +165,15 @@ class ArifaService : Service() {
         } else {
             startForeground(NOTIFICATION_ID, notification)
         }
+    }
+
+    /** Stops recognition and cancels any queued restart without a stale reuse. */
+    private fun stopWakeListening() {
+        mainHandler.removeCallbacksAndMessages(null)
+        handler?.removeCallbacksAndMessages(null)
+        restartDelayMs = 900L
+        wakeFired = false
+        destroyRecognizer()
     }
 
     private fun createChannel() {
@@ -124,62 +202,93 @@ class ArifaService : Service() {
             .build()
     }
 
+    /** Entry point: recognizer creation/start must happen on the main thread. */
     private fun startWakeListening() {
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
-            != PackageManager.PERMISSION_GRANTED
-        ) {
-            MainActivity.emit("permission", "RECORD_AUDIO permission নেই Emon Bhai")
-            return
-        }
-        if (recognizer == null) {
-            recognizer = SpeechRecognizer.createSpeechRecognizer(this)
-            recognizer?.setRecognitionListener(object : RecognitionListener {
-                override fun onReadyForSpeech(params: Bundle?) {}
-                override fun onBeginningOfSpeech() {}
-                override fun onRmsChanged(rmsdB: Float) {}
-                override fun onBufferReceived(buffer: ByteArray?) {}
-                override fun onEndOfSpeech() {}
-
-                override fun onError(error: Int) {
-                    MainActivity.emit("wake_error", "SpeechRecognizer error: $error")
-                    scheduleRestart()
-                }
-
-                override fun onResults(results: Bundle?) {
-                    val list = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                    val heard = list?.firstOrNull().orEmpty()
-                    if (heard.isNotBlank() && containsWake(heard)) {
-                        MainActivity.emit("wake", heard)
-                        launchAppOnWake()
+        mainHandler.post {
+            if (!isRunning) return@post
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+                != PackageManager.PERMISSION_GRANTED
+            ) {
+                MainActivity.emit("permission", "RECORD_AUDIO permission নেই Emon Bhai")
+                return@post
+            }
+            if (recognizer == null) {
+                recognizer = SpeechRecognizer.createSpeechRecognizer(this)
+                recognizer?.setRecognitionListener(object : RecognitionListener {
+                    override fun onReadyForSpeech(params: Bundle?) {
+                        // A healthy session resets the backoff to its base.
+                        restartDelayMs = 900L
                     }
-                    scheduleRestart()
-                }
+                    override fun onBeginningOfSpeech() {}
+                    override fun onRmsChanged(rmsdB: Float) {}
+                    override fun onBufferReceived(buffer: ByteArray?) {}
+                    override fun onEndOfSpeech() {}
 
-                override fun onPartialResults(partialResults: Bundle?) {
-                    val list = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                    val heard = list?.firstOrNull().orEmpty()
-                    if (heard.isNotBlank() && containsWake(heard)) {
-                        MainActivity.emit("wake", heard)
-                        launchAppOnWake()
-                        recognizer?.stopListening()
+                    override fun onError(error: Int) {
+                        // Terminal errors (e.g. insufficient permissions) would
+                        // otherwise spin in a tight loop. Destroy and back off.
+                        MainActivity.emit("wake_error", "SpeechRecognizer error: $error")
+                        destroyRecognizer()
+                        scheduleRestart(terminal = error == SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS)
                     }
-                }
 
-                override fun onEvent(eventType: Int, params: Bundle?) {}
-            })
+                    override fun onResults(results: Bundle?) {
+                        val list = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                        val heard = list?.firstOrNull().orEmpty()
+                        if (heard.isNotBlank() && containsWake(heard)) {
+                            fireWake(heard)
+                        }
+                        scheduleRestart()
+                    }
+
+                    override fun onPartialResults(partialResults: Bundle?) {
+                        val list = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                        val heard = list?.firstOrNull().orEmpty()
+                        if (heard.isNotBlank() && containsWake(heard)) {
+                            fireWake(heard)
+                            try {
+                                recognizer?.stopListening()
+                            } catch (_: Exception) {
+                            }
+                        }
+                    }
+
+                    override fun onEvent(eventType: Int, params: Bundle?) {}
+                })
+            }
+            val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE, "bn-BD")
+                putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+                putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 2)
+            }
+            try {
+                recognizer?.startListening(intent)
+            } catch (e: Exception) {
+                Log.e("ArifaService", "startListening failed", e)
+                destroyRecognizer()
+                scheduleRestart()
+            }
         }
-        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, "bn-BD")
-            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 2)
+    }
+
+    /** Emits a wake event at most once per recognition session. */
+    private fun fireWake(heard: String) {
+        mainHandler.post {
+            if (wakeFired) return@post
+            wakeFired = true
+            MainActivity.emit("wake", heard)
+            launchAppOnWake()
         }
+    }
+
+    private fun destroyRecognizer() {
         try {
-            recognizer?.startListening(intent)
-        } catch (e: Exception) {
-            Log.e("ArifaService", "startListening failed", e)
-            scheduleRestart()
+            recognizer?.stopListening()
+            recognizer?.destroy()
+        } catch (_: Exception) {
         }
+        recognizer = null
     }
 
     private fun containsWake(text: String): Boolean {
@@ -201,16 +310,14 @@ class ArifaService : Service() {
         }
     }
 
-    private fun scheduleRestart() {
-        handler?.postDelayed({
-            if (isRunning) {
-                try {
-                    startWakeListening()
-                } catch (_: Exception) {
-                    scheduleRestart()
-                }
-            }
-        }, 900)
+    private fun scheduleRestart(terminal: Boolean = false) {
+        if (!isRunning || terminal) return
+        wakeFired = false
+        val delay = restartDelayMs
+        restartDelayMs = minOf(restartDelayMs * 2, 30_000L)
+        mainHandler.postDelayed({
+            startWakeListening()
+        }, delay)
     }
 
     private fun captureScreen(intent: Intent) {
@@ -218,30 +325,77 @@ class ArifaService : Service() {
         @Suppress("DEPRECATION")
         val data = intent.getParcelableExtra("data") as? Intent
         if (data == null || resultCode == 0) {
-            finishCapture(null)
+            failCaptureAndRestoreWake()
             return
         }
         val manager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         val projection = try {
             manager.getMediaProjection(resultCode, data)
         } catch (e: Exception) {
-            finishCapture(null)
+            failCaptureAndRestoreWake()
             return
         }
+
+        val done = java.util.concurrent.atomic.AtomicBoolean(false)
+        var reader: ImageReader? = null
+        var display: android.hardware.display.VirtualDisplay? = null
+
+        // Single idempotent cleanup for success, denial, exception, timeout and
+        // user revocation. Returns true only for the caller that won the race.
+        fun cleanup(): Boolean {
+            if (!done.compareAndSet(false, true)) return false
+            captureInProgress = false
+            try { display?.release() } catch (_: Exception) {}
+            try { reader?.close() } catch (_: Exception) {}
+            try { projection.stop() } catch (_: Exception) {}
+            return true
+        }
+
+        // Android 14+ can revoke capture at any time; without this callback the
+        // reader/display leak and the pending MethodChannel result never returns.
+        try {
+            projection.registerCallback(object : MediaProjection.Callback() {
+                override fun onStop() {
+                    if (cleanup()) {
+                        finishCapture(null)
+                        restoreWakeListening()
+                    }
+                }
+            }, handler)
+        } catch (_: Exception) {
+        }
+
+        // Watchdog: if no image ever arrives, fail cleanly instead of hanging.
+        handler?.postDelayed({
+            if (cleanup()) {
+                finishCapture(null)
+                restoreWakeListening()
+            }
+        }, 5000L)
 
         val metrics = resources.displayMetrics
         val width = metrics.widthPixels
         val height = metrics.heightPixels
         val density = metrics.densityDpi
-        val reader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
-        val display = projection.createVirtualDisplay(
-            "ArifaScreen", width, height, density,
-            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-            reader.surface, null, handler,
-        )
+        try {
+            reader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
+            display = projection.createVirtualDisplay(
+                "ArifaScreen", width, height, density,
+                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                reader!!.surface, null, handler,
+            )
+        } catch (e: Exception) {
+            Log.e("ArifaService", "virtual display creation failed", e)
+            if (cleanup()) {
+                finishCapture(null)
+                restoreWakeListening()
+            }
+            return
+        }
 
-        reader.setOnImageAvailableListener({ r ->
+        reader!!.setOnImageAvailableListener({ r ->
             val image = r.acquireLatestImage() ?: return@setOnImageAvailableListener
+            var path: String? = null
             try {
                 val plane = image.planes[0]
                 val buffer: ByteBuffer = plane.buffer
@@ -278,35 +432,40 @@ class ArifaService : Service() {
                 FileOutputStream(file).use { out ->
                     scaled.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, out)
                 }
-                finishCapture(file.absolutePath)
+                path = file.absolutePath
                 if (scaled !== cropped) scaled.recycle()
                 cropped.recycle()
                 bitmap.recycle()
             } catch (e: Exception) {
-                finishCapture(null)
+                Log.e("ArifaService", "screenshot encode failed", e)
             } finally {
-                image.close()
-                display?.release()
-                r.close()
-                try {
-                    projection.stop()
-                } catch (_: Exception) {
-                }
-                // Resume always-on wake listening after the screenshot.
-                startService(Intent(this@ArifaService, ArifaService::class.java))
+                try { image.close() } catch (_: Exception) {}
+            }
+            if (cleanup()) {
+                finishCapture(path)
+                restoreWakeListening()
             }
         }, handler)
+    }
+
+    private fun failCaptureAndRestoreWake() {
+        finishCapture(null)
+        restoreWakeListening()
+    }
+
+    /** Restarts the microphone wake service after any capture exit path. */
+    private fun restoreWakeListening() {
+        try {
+            startService(Intent(this@ArifaService, ArifaService::class.java))
+        } catch (_: Exception) {
+        }
     }
 
     override fun onDestroy() {
         isRunning = false
         onCaptureDone = null
-        try {
-            recognizer?.stopListening()
-            recognizer?.destroy()
-        } catch (_: Exception) {
-        }
-        recognizer = null
+        mainHandler.removeCallbacksAndMessages(null)
+        stopWakeListening()
         handler?.removeCallbacksAndMessages(null)
         thread?.quitSafely()
         super.onDestroy()

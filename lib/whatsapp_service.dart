@@ -82,9 +82,25 @@ class WhatsAppService {
 
     final openedChat = await _listener.openChat(incoming.notificationKey);
     if (!openedChat) {
-      await _method.invokeMethod<void>('openWhatsApp');
+      // A failed open must never leave the reply typing into another app.
+      try {
+        await _method.invokeMethod<void>('openWhatsApp');
+      } on PlatformException catch (e) {
+        return ReplyOutcome(
+          ok: false,
+          detail: 'chat open failed (${e.code})',
+          channel: 'accessibility',
+        );
+      } catch (_) {
+        return const ReplyOutcome(
+          ok: false,
+          detail: 'chat open failed',
+          channel: 'accessibility',
+        );
+      }
     }
-    await Future<void>.delayed(const Duration(milliseconds: 80));
+    // Give the chat a moment to come foreground; native also verifies it.
+    await Future<void>.delayed(const Duration(milliseconds: 250));
 
     try {
       final result = await _method.invokeMethod<String>('typeWhatsAppReply', {
@@ -95,13 +111,13 @@ class WhatsAppService {
         ok: ok,
         detail: ok
             ? (fallbackReason == null ? 'sent' : 'cloud fail, sent on device')
-            : 'composer/send button not found: ${result ?? 'unknown'}',
+            : 'composer/send button not found',
         channel: 'accessibility',
       );
     } on PlatformException catch (e) {
       return ReplyOutcome(
         ok: false,
-        detail: 'accessibility error: ${e.message}',
+        detail: 'accessibility error (${e.code})',
         channel: 'accessibility',
       );
     }
@@ -135,7 +151,8 @@ class WhatsAppService {
         .timeout(const Duration(milliseconds: 1200));
 
     if (res.statusCode >= 400) {
-      throw Exception('Cloud API ${res.statusCode}: ${res.body}');
+      // Never surface an untrusted provider body in the app UI (AUDIT M18).
+      throw Exception('Cloud API ${res.statusCode}');
     }
     return const ReplyOutcome(
       ok: true,

@@ -3,6 +3,15 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# Fresh clones lack Flutter-generated wrapper scripts/JAR and styles.xml.
+# Regenerate the Android scaffold deterministically before invoking Gradle.
+if [ ! -f android/gradlew ] || \
+   [ ! -f android/gradle/wrapper/gradle-wrapper.jar ] || \
+   [ ! -f android/app/src/main/res/values/styles.xml ]; then
+  echo "Android scaffold incomplete - regenerating with scripts/bootstrap.sh"
+  bash scripts/bootstrap.sh
+fi
+
 # Never ship Flutter's default launcher icons.
 python3 scripts/generate_icon.py
 

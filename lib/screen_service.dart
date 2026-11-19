@@ -33,11 +33,14 @@ class ScreenService {
     try {
       final bytes = await File(path).readAsBytes();
       final base64Image = base64Encode(bytes);
-      // Gemini inline_data has a ~4MB safe limit; downscale natively if needed.
+      // Gemini inline_data has a ~4MB safe limit. Native capture already
+      // downscales to a 1280px max edge at quality 80, so a row this large is
+      // unexpected — report only the length, never the whole byte list.
       if (bytes.length > 4 * 1024 * 1024) {
         return ScreenReport(
           description:
-              'স্ক্রিনশট অনেক বড় ($bytes bytes)। একটু কম রিজোলিউশনে আবার চেষ্টা করছি Emon Bhai।',
+              'স্ক্রিনশট অনেক বড় (${bytes.length} bytes) Emon Bhai। '
+              'Settings-এ ডিভাইসের রিজোলিউশন কমিয়ে আবার চেষ্টা করো।',
           detectedErrors: const [],
           modelUsed: 'local',
         );

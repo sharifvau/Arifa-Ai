@@ -58,6 +58,8 @@ class NotificationListener {
   /// alive. A fresh isolate drains it on init so no allowed message is lost.
   static const _pendingKey = 'wa_pending_messages';
   static const _pendingCap = 50;
+  static const _sentKey = 'wa_sent_notification_keys';
+  static const _sentCap = 300;
   final FlutterSecureStorage _storage = const FlutterSecureStorage(
     aOptions: AndroidOptions(),
   );
@@ -70,6 +72,10 @@ class NotificationListener {
   /// Serializes read-modify-write of the pending queue between bursts.
   Future<void> _pendingWrite = Future<void>.value();
 
+  /// Notification keys already answered. Prevents a reply-then-crash from
+  /// replaying the same message and replying twice (AUDIT H13).
+  final Set<String> _sentKeys = <String>{};
+
   Stream<IncomingWhatsAppMessage> get incoming => _incoming.stream;
   Stream<String> get status => _status.stream;
 
@@ -79,9 +85,36 @@ class NotificationListener {
       _onEvent,
       onError: (Object e) => _status.add('[notification listener] $e'),
     );
+    // Load the already-answered keys before replaying the pending queue.
+    try {
+      final rawSent = await _storage.read(key: _sentKey);
+      if (rawSent != null && rawSent.trim().isNotEmpty) {
+        final decoded = jsonDecode(rawSent);
+        if (decoded is List) {
+          _sentKeys.addAll(decoded.whereType<String>());
+        }
+      }
+    } catch (_) {}
+
     // Messages queued during process death are replayed into _incoming here.
     // AutoReplyService subscribes before calling init(), so nothing is lost.
     await drainPending();
+  }
+
+  bool wasSent(String key) => key.isNotEmpty && _sentKeys.contains(key);
+
+  /// Records a successful reply so a pending replay cannot duplicate it.
+  Future<void> markSent(String key) async {
+    if (key.isEmpty || !_sentKeys.add(key)) return;
+    while (_sentKeys.length > _sentCap) {
+      _sentKeys.remove(_sentKeys.first);
+    }
+    try {
+      await _storage.write(
+        key: _sentKey,
+        value: jsonEncode(_sentKeys.toList()),
+      );
+    } catch (_) {}
   }
 
   /// Replays the encrypted pending queue into [_incoming] and clears it.
@@ -106,6 +139,7 @@ class NotificationListener {
               jsonDecode(item) as Map<String, dynamic>,
             );
             if (message.contact.isEmpty || message.message.isEmpty) continue;
+            if (wasSent(message.notificationKey)) continue;
             _incoming.add(message);
             drained++;
           } catch (_) {
@@ -179,15 +213,17 @@ class NotificationListener {
     required bool replyUnknown,
   }) async {
     try {
-      final nativeAllow = replyUnknown && !allowList.contains('*')
-          ? [...allowList, '*']
-          : allowList;
+      // No '*' wildcard: native gets the explicit allow list plus a separate
+      // replyUnknown flag so unknown senders remain a distinct decision.
+      final nativeAllow =
+          allowList.where((e) => e.trim() != '*').toList(growable: false);
       final result = await _method.invokeMethod<bool>(
         'configureWhatsAppAutoReply',
         {
           'enabled': enabled,
           'allowList': nativeAllow,
           'importantContacts': importantContacts,
+          'replyUnknown': replyUnknown,
         },
       );
       return result ?? false;

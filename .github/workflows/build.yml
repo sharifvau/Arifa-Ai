@@ -42,7 +42,7 @@ jobs:
             [ ! -f android/settings.gradle ] || \
             [ ! -f android/app/build.gradle ] || \
             [ ! -f android/app/src/main/AndroidManifest.xml ]; }; then
-            flutter create --org com.arifa.app --project-name arifa --platforms android .
+            flutter create --org com.arifa.app --project-name arifa --platforms android --no-pub .
             git checkout HEAD -- lib/ assets/ models.json
           fi
 

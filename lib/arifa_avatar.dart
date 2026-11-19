@@ -41,14 +41,20 @@ class _ArifaAvatarState extends State<ArifaAvatar>
   late final AnimationController _talk = AnimationController(
     vsync: this,
     duration: const Duration(milliseconds: 420),
-  )..repeat(reverse: true);
+  );
+
+  bool get _talkActive =>
+      widget.mood == AvatarMood.speaking ||
+      widget.effect == AvatarEffect.celebrate;
 
   Timer? _blinkTimer;
+  Timer? _blinkOffTimer;
   bool _blinking = false;
 
   @override
   void initState() {
     super.initState();
+    if (_talkActive) _talk.repeat(reverse: true);
     _blinkTimer = Timer.periodic(const Duration(seconds: 3), (_) {
       if (!mounted ||
           widget.mood == AvatarMood.speaking ||
@@ -56,15 +62,27 @@ class _ArifaAvatarState extends State<ArifaAvatar>
         return;
       }
       setState(() => _blinking = true);
-      Timer(const Duration(milliseconds: 130), () {
+      _blinkOffTimer?.cancel();
+      _blinkOffTimer = Timer(const Duration(milliseconds: 130), () {
         if (mounted) setState(() => _blinking = false);
       });
     });
   }
 
   @override
+  void didUpdateWidget(covariant ArifaAvatar oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (_talkActive && !_talk.isAnimating) {
+      _talk.repeat(reverse: true);
+    } else if (!_talkActive && _talk.isAnimating) {
+      _talk.stop();
+    }
+  }
+
+  @override
   void dispose() {
     _blinkTimer?.cancel();
+    _blinkOffTimer?.cancel();
     _life.dispose();
     _talk.dispose();
     super.dispose();
@@ -585,6 +603,11 @@ class _AvatarPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(covariant _AvatarPainter oldDelegate) => true;
+  bool shouldRepaint(covariant _AvatarPainter oldDelegate) =>
+      oldDelegate.mood != mood ||
+      oldDelegate.effect != effect ||
+      oldDelegate.blink != blink ||
+      oldDelegate.talk != talk ||
+      oldDelegate.time != time;
 }
 

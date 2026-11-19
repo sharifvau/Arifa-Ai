@@ -92,10 +92,10 @@ class VoiceService {
       // engines whose names contain it, so it must not pick a voice here.
       final femaleWords = [
         'female', 'woman', 'zira', 'samantha', 'victoria', 'karen',
-        'বাংলা', 'নারী', 'মহিলা',
+        'নারী', 'মহিলা',
       ];
       final maleWords = [
-        'male', 'man', 'david', 'daniel', 'google', 'পুরুষ', 'পুরুষবাচক',
+        'male', 'david', 'daniel', 'পুরুষ', 'পুরুষবাচক',
       ];
       final keywords = choice == VoiceChoice.banglaMale
           ? maleWords

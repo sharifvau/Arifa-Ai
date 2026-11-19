@@ -19,10 +19,15 @@ import 'voice_service.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await SettingsService.instance.init();
+  // A secure-storage/Keystore error must never leave a black screen.
+  try {
+    await SettingsService.instance.init();
+  } catch (_) {}
   // Start before the UI so allow-listed replies keep working even when the
   // chat sheet is closed or the app is in the background.
-  await AutoReplyService.instance.init();
+  try {
+    await AutoReplyService.instance.init();
+  } catch (_) {}
   runApp(const ArifaApp());
 }
 
@@ -252,11 +257,43 @@ class _ArifaHomeState extends State<ArifaHome>
   }
 
   Future<void> _askPermissions() async {
+    // CALL_PHONE/SEND_SMS are requested lazily, only when those commands are
+    // actually used and confirmed (AUDIT M23).
     await [Permission.microphone, Permission.notification].request();
-    await _phone.requestPhonePermissions();
+  }
+
+  /// Explicit confirmation before any real phone/SMS action (AUDIT M23).
+  Future<bool> _confirmAction(String action) async {
+    if (!mounted) return false;
+    return await showDialog<bool>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            backgroundColor: const Color(0xFF06182B),
+            title: const Text(
+              'Confirm?',
+              style: TextStyle(color: Colors.cyanAccent),
+            ),
+            content: Text(
+              '$action Emon Bhai?',
+              style: const TextStyle(color: Colors.white),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('Cancel'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(ctx, true),
+                child: const Text('Confirm'),
+              ),
+            ],
+          ),
+        ) ??
+        false;
   }
 
   void _addArifa(String text, [List<CodeBlock> code = const []]) {
+    if (!mounted) return;
     setState(() {
       _messages.add(
         ChatMessage(speaker: Speaker.arifa, text: text, code: code),
@@ -266,6 +303,7 @@ class _ArifaHomeState extends State<ArifaHome>
   }
 
   void _addUser(String text) {
+    if (!mounted) return;
     setState(() {
       _messages.add(ChatMessage(speaker: Speaker.user, text: text));
     });
@@ -273,6 +311,7 @@ class _ArifaHomeState extends State<ArifaHome>
   }
 
   void _scrollToEnd() {
+    if (!mounted) return;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_scroll.hasClients) {
         _scroll.animateTo(
@@ -361,9 +400,6 @@ class _ArifaHomeState extends State<ArifaHome>
       final lower = text.toLowerCase();
       if (RegExp(r'screen|স্ক্রিন|screenshot|dekho|দেখ').hasMatch(lower)) {
         await _handleScreen();
-      } else if (RegExp(r'apk|app|অ্যাপ|বানা|banaw|banao|build|কম্পাইল|compile')
-          .hasMatch(lower)) {
-        await _handleBuild(text);
       } else if (RegExp(r'setting|সেটিং').hasMatch(lower)) {
         await _openSettings();
       } else if (RegExp(r'\bsms\b|\bএসএমএস\b', caseSensitive: false)
@@ -378,11 +414,16 @@ class _ArifaHomeState extends State<ArifaHome>
       } else if (RegExp(r'song|গান|music|মিউজিক|play').hasMatch(lower)) {
         await _handleSong(text);
       } else if (RegExp(r'open|খুল|খোল|launch').hasMatch(lower)) {
+        // Explicit actions must win over the generic "app/build" keyword:
+        // "open app YouTube" is not a build request (AUDIT M12).
         await _handleOpen(text);
       } else if (RegExp(r'voice|ভয়েস|ভয়েস|tts').hasMatch(lower)) {
         final r = await _phone.openTtsSettings();
         _addArifa('Google TTS settings খুলে দিচ্ছি Emon Bhai। $r');
         await _voice.speak('ভয়েস সেটিংস খুলে দিলাম Emon Bhai।');
+      } else if (RegExp(r'apk|app|অ্যাপ|বানা|banaw|banao|build|কম্পাইল|compile')
+          .hasMatch(lower)) {
+        await _handleBuild(text);
       } else {
         final reply = await _brain.ask(text, history: _messages);
         _addArifa(reply.text, reply.code);
@@ -517,19 +558,21 @@ class _ArifaHomeState extends State<ArifaHome>
         ? 'Hoye geche Emon Bhai ♥\n'
             'Flutter দিয়ে আসল APK build হয়ে গেছে (${result.attempts} চেষ্টায়)।\n'
             '${result.apkPath}'
-        : 'Hoye geche Emon Bhai ♥\n'
+        : 'Source zip ready Emon Bhai.\n'
             'কোড তৈরি + AI রিভিউ শেষ, কিন্তু APK build হয়নি '
             '(${result.flutterAvailable ? 'build fail' : 'Flutter SDK পাওয়া যায়নি'})। '
             'সম্পূর্ণ source zip দিচ্ছি:\n'
             '${result.zipPath}';
     _addArifa(msg, result.app.files);
     _setMood(
-      AvatarMood.happy,
-      'Hoye geche! ♥',
-      effect: AvatarEffect.celebrate,
+      built ? AvatarMood.happy : AvatarMood.thinking,
+      built ? 'Hoye geche! ♥' : 'Source zip ready',
+      effect: built ? AvatarEffect.celebrate : AvatarEffect.none,
       autoReset: const Duration(seconds: 4),
     );
-    await _voice.speak('Hoye geche Emon Bhai!');
+    await _voice.speak(
+      built ? 'Hoye geche Emon Bhai!' : 'Source zip ready Emon Bhai.',
+    );
     _addArifa(
       built
           ? 'APK ready ♥ — file path upore dewa ache Emon Bhai.'
@@ -586,12 +629,14 @@ class _ArifaHomeState extends State<ArifaHome>
       await _voice.speak('নম্বর আর মেসেজ বলো Emon Bhai।');
       return;
     }
+    final to = m.group(1)!.trim();
+    if (!await _confirmAction('Send SMS to $to')) return;
     final granted = await _phone.requestPhonePermissions();
     if (!granted) {
       _addArifa('SMS permission chai Emon Bhai — Settings e din.');
       return;
     }
-    final r = await _phone.sendSms(m.group(1)!.trim(), m.group(2)!.trim());
+    final r = await _phone.sendSms(to, m.group(2)!.trim());
     _addArifa('SMS পাঠাচ্ছি Emon Bhai। $r');
     await _voice.speak('SMS পাঠাচ্ছি Emon Bhai।');
   }
@@ -604,6 +649,7 @@ class _ArifaHomeState extends State<ArifaHome>
       await _voice.speak('নম্বর বলো Emon Bhai।');
       return;
     }
+    if (!await _confirmAction('Call $number')) return;
     final granted = await _phone.requestPhonePermissions();
     final r = granted ? await _phone.call(number) : await _phone.dial(number);
     _addArifa(
@@ -677,8 +723,9 @@ class _ArifaHomeState extends State<ArifaHome>
     _heardSub?.cancel();
     _waEnabledSub?.cancel();
     _waStatusSub?.cancel();
-    _voice.dispose();
-    _native.dispose();
+    // These teardowns are async; never leave the futures unobserved.
+    unawaited(_voice.dispose());
+    unawaited(_native.dispose());
     _pulse.dispose();
     _input.dispose();
     _scroll.dispose();

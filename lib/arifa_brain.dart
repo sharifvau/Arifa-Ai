@@ -23,7 +23,15 @@ class BrainReply {
 
 class BrainException implements Exception {
   final String message;
-  BrainException(this.message);
+
+  /// HTTP status when the failure came from a provider, for actionable UI text.
+  final int? statusCode;
+
+  /// Auth failures (401/403) must stop failover — retrying other models with
+  /// the same bad key cannot help and only wastes the user's quota/time.
+  final bool authFailure;
+
+  BrainException(this.message, {this.statusCode, this.authFailure = false});
 
   @override
   String toString() => message;
@@ -36,6 +44,11 @@ class ArifaBrain {
 
   final http.Client _client;
   final SettingsService _settings = SettingsService.instance;
+
+  /// A single user command must never try an unbounded number of catalog rows.
+  static const int maxFailoverModels = 3;
+  static const Duration failoverDeadline = Duration(seconds: 25);
+  static const Duration perCallTimeout = Duration(seconds: 90);
 
   static const String persona = '''
 তুমি ARIFA — একজন কিউট, বন্ধুত্বপূর্ণ বাংলাদেশী মেয়ে AI অ্যাসিস্ট্যান্ট।
@@ -50,14 +63,16 @@ class ArifaBrain {
 
   BrainTask classify(String input) {
     final t = input.toLowerCase();
-    if (RegExp(r'screen|স্ক্রিন|dekho|দেখ|screenshot|ভুল|error|fix|ঠিক')
-        .hasMatch(t)) {
-      return BrainTask.vision;
-    }
+    // Coding first: "fix this Dart error" must not be mistaken for a request
+    // to analyse the screen. Screen capture passes forcedTask: vision anyway
+    // (lib/screen_service.dart:52), so vision needs only explicit phrases.
     if (RegExp(
       r'apk|build|code|কোড|flutter|dart|app|বানা|banaw|banao|fix|bug|error|compile|project',
     ).hasMatch(t)) {
       return BrainTask.coding;
+    }
+    if (RegExp(r'screen|স্ক্রিন|dekho|দেখ|screenshot|স্ক্রিনশট').hasMatch(t)) {
+      return BrainTask.vision;
     }
     if (RegExp(
       r'plan|planning|think|vision|long|depth|গভীর|বিশ্লেষ|strateg|roadmap|compare',
@@ -76,8 +91,11 @@ class ArifaBrain {
     final task = forcedTask ?? classify(input);
     final models = _modelsFor(task);
     final errors = <String>[];
+    final deadline = DateTime.now().add(failoverDeadline);
 
-    for (final model in models) {
+    for (final model in models.take(maxFailoverModels)) {
+      final timeout = _remainingTimeout(deadline);
+      if (timeout <= Duration.zero) break;
       try {
         final text = await _call(
           model: model,
@@ -85,6 +103,7 @@ class ArifaBrain {
           imageBase64: imageBase64,
           jsonMode: false,
           maxTokens: task == BrainTask.vision ? 900 : 700,
+          timeout: timeout,
         );
         return BrainReply(
           text: stripCodeBlocks(text).trim(),
@@ -93,10 +112,13 @@ class ArifaBrain {
           modelUsed: model.name,
         );
       } catch (e) {
-        errors.add('${model.name}: ${_short(e.toString())}');
+        if (e is BrainException && e.authFailure) break;
+        _addError(errors, '${model.name}: ${_short(e.toString())}');
       }
     }
-    throw BrainException('সব মডেল fail করেছে Emon Bhai। ${errors.join(' | ')}');
+    throw BrainException(
+      'সব মডেল fail করেছে Emon Bhai। ${errors.join(' | ')}',
+    );
   }
 
   /// Fast reply composer for WhatsApp Auto Reply. Only called when the user
@@ -150,6 +172,7 @@ ${samples.isEmpty ? '' : 'আমার আগের কথার স্টাই
       ],
       jsonMode: false,
       maxTokens: 100,
+      timeout: const Duration(seconds: 1),
     ).timeout(const Duration(milliseconds: 700));
 
     final clean = stripCodeBlocks(text).trim().replaceAll(RegExp(r'\s+'), ' ');
@@ -201,19 +224,24 @@ Rules:
     ];
 
     final errors = <String>[];
-    for (final model in _modelsFor(BrainTask.coding)) {
+    final deadline = DateTime.now().add(failoverDeadline);
+    for (final model in _modelsFor(BrainTask.coding).take(maxFailoverModels)) {
+      final timeout = _remainingTimeout(deadline);
+      if (timeout <= Duration.zero) break;
       try {
         final text = await _call(
           model: model,
           messages: messages,
           jsonMode: true,
           maxTokens: 16000,
+          timeout: timeout,
         );
         final app = _parseAppJson(text);
         if (app.files.isNotEmpty) return _normalizeApp(app);
         throw BrainException('empty file list');
       } catch (e) {
-        errors.add('${model.name}: ${_short(e.toString())}');
+        if (e is BrainException && e.authFailure) break;
+        _addError(errors, '${model.name}: ${_short(e.toString())}');
       }
     }
     throw BrainException('কোড জেনারেট fail: ${errors.join(' | ')}');
@@ -256,12 +284,28 @@ Rules:
         .toList();
 
     if (usable.isEmpty) {
-      throw BrainException(
-        'এখনো কোনো মডেল ব্যবহারযোগ্য নেই Emon Bhai। '
-        'Settings > AI Brain / Model Manager-এ গিয়ে '
-        'Fetch Latest Models দিয়ে একটা মডেল অ্যাড করে Default সেট করো, '
-        'অথবা নিজের Model ID লিখে Add & Use Now চাপো।',
-      );
+      // An empty ID and a missing key need different fixes — say which one.
+      final all = _settings.models;
+      final missingId = all.where((m) => m.id.trim().isEmpty).length;
+      final missingKey = all.where((m) => !_settings.hasKeyFor(m.provider)).length;
+      String hint() {
+        if (all.isNotEmpty && missingId == all.length) {
+          return 'Settings > AI Brain / Model Manager-এ গিয়ে Fetch Latest Models '
+              'দিয়ে একটা মডেল অ্যাড করে Default সেট করো, অথবা নিজের Model ID '
+              'লিখে Add & Use Now চাপো।';
+        }
+        if (missingId > 0 && missingKey > 0) {
+          return 'কিছু মডেলে Model ID নেই, আবার কিছুতে API Key নেই — Settings-এ '
+              'দুটোই পূরণ করে Default সেট করো Emon Bhai।';
+        }
+        if (missingId > 0) {
+          return 'এই মডেলগুলোর Model ID খালি Emon Bhai — Settings-এ ID সেট করো।';
+        }
+        return 'এই মডেলগুলোর জন্য API Key নেই Emon Bhai — Settings-এ নিজের Key '
+            'বসাও।';
+      }
+
+      throw BrainException('এখনো কোনো মডেল ব্যবহারযোগ্য নেই Emon Bhai। ${hint()}');
     }
 
     final ordered = <ModelEntry>[];
@@ -318,8 +362,14 @@ Rules:
     String? imageBase64,
     required bool jsonMode,
     required int maxTokens,
+    Duration timeout = perCallTimeout,
   }) async {
     final id = model.id.trim();
+    if (id.isEmpty) {
+      throw BrainException(
+        '${model.name}-এর Model ID খালি Emon Bhai — Settings-এ গিয়ে ID সেট করো।',
+      );
+    }
     if (model.provider == ModelProvider.gemini) {
       return _callGemini(
         model: id,
@@ -327,6 +377,7 @@ Rules:
         imageBase64: imageBase64,
         jsonMode: jsonMode,
         maxTokens: maxTokens,
+        timeout: timeout,
       );
     }
     return _callOpenRouter(
@@ -335,6 +386,7 @@ Rules:
       imageBase64: imageBase64,
       jsonMode: jsonMode,
       maxTokens: maxTokens,
+      timeout: timeout,
     );
   }
 
@@ -344,6 +396,7 @@ Rules:
     String? imageBase64,
     required bool jsonMode,
     required int maxTokens,
+    Duration timeout = perCallTimeout,
   }) async {
     final key = _settings.openRouterKey;
     if (key.isEmpty) throw BrainException('OpenRouter key নেই');
@@ -366,24 +419,30 @@ Rules:
           },
           body: jsonEncode(body),
         )
-        .timeout(const Duration(seconds: 90));
+        .timeout(timeout, onTimeout: () {
+      throw _timeout('OpenRouter', timeout);
+    });
 
-    if (res.statusCode >= 400) {
-      throw BrainException('OR ${res.statusCode}: ${_short(res.body)}');
+    if (res.statusCode >= 400) throw _httpFailure('OpenRouter', res);
+
+    final decoded = jsonDecode(res.body);
+    if (decoded is! Map) throw BrainException('OR unreadable response');
+    final choices = decoded['choices'];
+    if (choices is! List || choices.isEmpty) {
+      throw BrainException('OR empty choices');
     }
-    final j = jsonDecode(res.body) as Map<String, dynamic>;
-    final choices = j['choices'] as List?;
-    if (choices == null || choices.isEmpty) {
-      throw BrainException('OR empty choices: ${_short(res.body)}');
-    }
-    final msg = (choices.first as Map)['message'] as Map?;
-    final content = msg?['content'];
+    final first = choices.first;
+    if (first is! Map) throw BrainException('OR unreadable choice');
+    final msg = first['message'];
+    if (msg is! Map) throw BrainException('OR unreadable message');
+    final content = msg['content'];
     if (content is String) return content;
     if (content is List) {
-      return content
+      final parts = content
           .map((e) => (e is Map ? e['text'] : null)?.toString() ?? '')
           .where((s) => s.isNotEmpty)
           .join('\n');
+      if (parts.isNotEmpty) return parts;
     }
     throw BrainException('OR unreadable content');
   }
@@ -415,6 +474,7 @@ Rules:
     String? imageBase64,
     required bool jsonMode,
     required int maxTokens,
+    Duration timeout = perCallTimeout,
   }) async {
     final key = _settings.geminiKey;
     if (key.isEmpty) throw BrainException('Gemini key নেই');
@@ -471,23 +531,30 @@ Rules:
           },
           body: jsonEncode(body),
         )
-        .timeout(const Duration(seconds: 90));
+        .timeout(timeout, onTimeout: () {
+      throw _timeout('Gemini', timeout);
+    });
 
-    if (res.statusCode >= 400) {
-      throw BrainException('Gemini ${res.statusCode}: ${_short(res.body)}');
-    }
-    final j = jsonDecode(res.body) as Map<String, dynamic>;
-    final candidates = j['candidates'] as List?;
-    if (candidates == null || candidates.isEmpty) {
+    if (res.statusCode >= 400) throw _httpFailure('Gemini', res);
+
+    final decoded = jsonDecode(res.body);
+    if (decoded is! Map) throw BrainException('Gemini unreadable response');
+    final candidates = decoded['candidates'];
+    if (candidates is! List || candidates.isEmpty) {
       throw BrainException('Gemini empty: ${_short(res.body)}');
     }
-    final parts =
-        ((candidates.first as Map)['content'] as Map?)?['parts'] as List?;
-    if (parts == null) throw BrainException('Gemini unreadable');
-    return parts
+    final first = candidates.first;
+    if (first is! Map) throw BrainException('Gemini unreadable candidate');
+    final content = first['content'];
+    if (content is! Map) throw BrainException('Gemini unreadable content');
+    final parts = content['parts'];
+    if (parts is! List) throw BrainException('Gemini unreadable parts');
+    final text = parts
         .map((p) => (p is Map ? p['text'] : null)?.toString() ?? '')
         .where((s) => s.isNotEmpty)
         .join('\n');
+    if (text.isEmpty) throw BrainException('Gemini empty content');
+    return text;
   }
 
   GeneratedApp _parseAppJson(String raw) {
@@ -592,6 +659,49 @@ class GeneratedApp extends StatelessWidget {
         return 'txt';
     }
   }
+
+  /// Time left for the whole failover chain, clamped to one call's ceiling.
+  Duration _remainingTimeout(DateTime deadline) {
+    final left = deadline.difference(DateTime.now());
+    if (left <= Duration.zero) return Duration.zero;
+    return left > perCallTimeout ? perCallTimeout : left;
+  }
+
+  /// Keeps at most 3 distinct, short errors so the primary cause stays visible
+  /// even after a user imports a very large catalog (M10).
+  void _addError(List<String> errors, String error) {
+    if (error.isEmpty || errors.contains(error) || errors.length >= 3) return;
+    errors.add(error);
+  }
+
+  /// Status-specific, actionable Bangla messages instead of raw bodies (M9).
+  BrainException _httpFailure(String provider, http.Response res) {
+    final code = res.statusCode;
+    final String detail;
+    final bool auth;
+    if (code == 401 || code == 403) {
+      detail = 'API Key invalid বা expired — Settings-এ Key আপডেট করো';
+      auth = true;
+    } else if (code == 404) {
+      detail = 'Model ID ভুল — Settings-এ Model ID ঠিক করো';
+      auth = false;
+    } else if (code == 429) {
+      detail = 'rate limit হয়েছে — একটু পরে আবার চেষ্টা করো';
+      auth = false;
+    } else {
+      detail = _short(res.body);
+      auth = false;
+    }
+    return BrainException(
+      '$provider HTTP $code: $detail',
+      statusCode: code,
+      authFailure: auth,
+    );
+  }
+
+  BrainException _timeout(String provider, Duration d) => BrainException(
+    '$provider ${d.inSeconds}s-এ উত্তর দিলো না Emon Bhai — আবার চেষ্টা করো।',
+  );
 
   String _short(String s) {
     final flat = s.replaceAll(RegExp(r'\s+'), ' ').trim();

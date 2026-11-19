@@ -392,10 +392,15 @@ class MainActivity : FlutterActivity() {
         val enabled = call.argument<Boolean>("enabled") ?: false
         val allow = call.argument<List<String>>("allowList") ?: emptyList()
         val important = call.argument<List<String>>("importantContacts") ?: emptyList()
+        val replyUnknown = call.argument<Boolean>("replyUnknown") ?: false
+        // A '*' entry is never sent to the native gate; unknown senders are a
+        // separate, explicit user choice stored in its own preference.
+        val safeAllow = allow.filter { it.trim() != "*" }
         val prefs = getSharedPreferences(ArifaNotificationListener.PREFS, Context.MODE_PRIVATE)
         prefs.edit()
             .putBoolean("auto_reply_enabled", enabled)
-            .putString("allowed_contacts", allow.joinToString(","))
+            .putBoolean("reply_unknown", replyUnknown)
+            .putString("allowed_contacts", safeAllow.joinToString(","))
             .putString("important_contacts", important.joinToString(","))
             .apply()
         return true

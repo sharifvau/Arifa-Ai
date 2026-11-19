@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -28,6 +29,27 @@ class ApkBuilder {
   final ArifaBrain _brain;
 
   static const _termuxFlutter = '/data/data/com.termux/files/usr/bin/flutter';
+  static const _processTimeout = Duration(minutes: 10);
+  static const _probeTimeout = Duration(seconds: 20);
+
+  /// Build mode is user-facing input: never let it become an arbitrary CLI flag.
+  String _mode(String raw) =>
+      (raw == 'release' || raw == 'debug') ? raw : 'debug';
+
+  /// AI review is best-effort. A failed/slow review must never destroy an
+  /// otherwise complete source zip (AUDIT H10).
+  Future<String> _safeReview(
+    GeneratedApp app,
+    StringBuffer log,
+    String label,
+  ) async {
+    try {
+      return (await _brain.reviewApp(app)).trim();
+    } catch (e) {
+      log.writeln('[AI review $label skipped] ${_logTail(e.toString(), 300)}');
+      return '';
+    }
+  }
 
   /// Generate -> AI review -> real Flutter build -> feed the *real* toolchain
   /// log back into [ArifaBrain.generateApp] on failure, up to [maxAttempts].
@@ -39,6 +61,7 @@ class ApkBuilder {
     void Function(String stage, String detail)? onProgress,
   }) async {
     final attempts = maxAttempts < 1 ? 1 : maxAttempts;
+    final mode = _mode(buildMode);
     final log = StringBuffer();
     final docs = await getApplicationDocumentsDirectory();
     final flutter = await _findFlutter(log);
@@ -53,9 +76,9 @@ class ApkBuilder {
         'Flutter SDK পাওয়া যায়নি, source zip তৈরি করছি...',
       );
       final app = await _brain.generateApp(request);
-      final review = (await _brain.reviewApp(app)).trim();
+      final review = await _safeReview(app, log, 'fallback');
       if (review.isNotEmpty) log.writeln('[AI review] $review');
-      final zip = await saveSourceZip(app, buildMode: buildMode);
+      final zip = await saveSourceZip(app, buildMode: mode);
       return BuildResult(
         app: app,
         zipPath: zip,
@@ -69,7 +92,7 @@ class ApkBuilder {
     }
 
     log.writeln('[flutter] Using SDK: $flutter');
-    log.writeln('[flutter] Build mode: $buildMode');
+    log.writeln('[flutter] Build mode: $mode');
 
     GeneratedApp? app;
     String? issue;
@@ -87,7 +110,7 @@ class ApkBuilder {
       );
 
       onProgress?.call('review', 'AI দিয়ে কোড চেক করছি...');
-      finalReview = (await _brain.reviewApp(app)).trim();
+      finalReview = await _safeReview(app, log, 'attempt $attempt');
       if (finalReview.isNotEmpty) {
         log.writeln('[AI review attempt $attempt] $finalReview');
       }
@@ -108,13 +131,13 @@ class ApkBuilder {
         app,
         projectDir,
         flutter,
-        buildMode,
+        mode,
         extraBuildArgs,
         log,
       );
       final attemptLog = log.toString().substring(logStart);
 
-      final zip = await saveSourceZip(app, buildMode: buildMode);
+      final zip = await saveSourceZip(app, buildMode: mode);
 
       if (built.success && built.apkPath != null) {
         return BuildResult(
@@ -142,7 +165,7 @@ class ApkBuilder {
     final finalApp = app!;
     return BuildResult(
       app: finalApp,
-      zipPath: await saveSourceZip(finalApp, buildMode: buildMode),
+      zipPath: await saveSourceZip(finalApp, buildMode: mode),
       attempts: attempts,
       review: issue ?? finalReview,
       apkPath: null,
@@ -160,7 +183,7 @@ class ApkBuilder {
           const ['--version'],
           stdoutEncoding: utf8,
           stderrEncoding: utf8,
-        );
+        ).timeout(_probeTimeout);
         if (r.exitCode == 0) {
           log.writeln('[flutter] Found: $candidate');
           return candidate;
@@ -227,6 +250,7 @@ class ApkBuilder {
   }
 
   /// Runs one toolchain command, capturing stdout + stderr + exit code.
+  /// A hung Flutter/Gradle process is killed instead of stalling the builder.
   Future<int> _run(
     String executable,
     List<String> args,
@@ -234,23 +258,43 @@ class ApkBuilder {
     StringBuffer log,
   ) async {
     log.writeln('\$ $executable ${args.join(' ')} (in $workingDirectory)');
+    Process? process;
+    StreamSubscription<String>? outSub;
+    StreamSubscription<String>? errSub;
+    final out = StringBuffer();
+    final err = StringBuffer();
     try {
-      final r = await Process.run(
+      process = await Process.start(
         executable,
         args,
         workingDirectory: workingDirectory,
-        stdoutEncoding: utf8,
-        stderrEncoding: utf8,
+      ).timeout(_probeTimeout);
+      outSub = process.stdout.transform(utf8.decoder).listen(out.write);
+      errSub = process.stderr.transform(utf8.decoder).listen(err.write);
+      final code = await process.exitCode.timeout(
+        _processTimeout,
+        onTimeout: () {
+          log.writeln('[process timeout] ${executable} ${args.join(' ')}');
+          // Kill the process and its group so Gradle children go down too.
+          try {
+            process!.kill();
+          } catch (_) {}
+          try {
+            Process.run('kill', ['-TERM', '-${process!.pid}']);
+          } catch (_) {}
+          return -1;
+        },
       );
-      final out = (r.stdout as String?) ?? '';
-      final err = (r.stderr as String?) ?? '';
-      if (out.trim().isNotEmpty) log.writeln(out);
-      if (err.trim().isNotEmpty) log.writeln('[stderr] $err');
-      log.writeln('[exit ${r.exitCode}]');
-      return r.exitCode;
+      if (out.toString().trim().isNotEmpty) log.writeln(out.toString());
+      if (err.toString().trim().isNotEmpty) log.writeln('[stderr] $err');
+      log.writeln('[exit $code]');
+      return code;
     } catch (e) {
       log.writeln('[process error] $e');
       return -1;
+    } finally {
+      await outSub?.cancel();
+      await errSub?.cancel();
     }
   }
 
@@ -277,9 +321,9 @@ class ApkBuilder {
     GeneratedApp app, {
     required String buildMode,
   }) {
-    final modeFlag = buildMode == 'release' ? 'release' : 'debug';
+    final modeFlag = _mode(buildMode);
     final apkName = modeFlag == 'release' ? 'app-release.apk' : 'app-debug.apk';
-    return <CodeBlock>[
+    final all = <CodeBlock>[
       ...app.files.map(
         (f) => CodeBlock(
           path: _safePath(f.path),
@@ -335,6 +379,15 @@ API keys are NOT included in this project.
 ''',
       ),
     ];
+
+    // Two AI files can sanitize to the same path, and an AI file can collide
+    // with the scaffold. Keep exactly one entry per path (ours wins) so the
+    // written project and the ZIP central directory always agree (M21).
+    final byPath = <String, CodeBlock>{};
+    for (final file in all) {
+      byPath[file.path] = file;
+    }
+    return byPath.values.toList();
   }
 
   /// Minimal but complete Android platform scaffold. Normally Flutter's own
@@ -342,7 +395,7 @@ API keys are NOT included in this project.
   /// is still a full project on machines without a Flutter SDK right now.
   List<CodeBlock> _androidScaffold(String name) {
     final safe = _safeName(name);
-    final package = 'com.example.$safe';
+    final package = 'com.example.${_safePkgSegment(safe)}';
     final packagePath = package.replaceAll('.', '/');
     final label = name.trim().isEmpty ? 'ARIFA App' : name.trim();
     return <CodeBlock>[
@@ -586,6 +639,7 @@ class MainActivity : FlutterActivity()
     final dosDate = ((now.year - 1980) << 9) | (now.month << 5) | now.day;
     var offset = 0;
 
+    try {
     for (final file in entries) {
       final name = utf8.encode(_safePath(file.path));
       final bytes = utf8.encode(file.content);
@@ -644,7 +698,10 @@ class MainActivity : FlutterActivity()
       ..setUint16(20, 0, Endian.little);
     sink.add(end.buffer.asUint8List());
     await sink.flush();
-    await sink.close();
+    } finally {
+      // Never leave the IOSink/file handle open on a write failure.
+      await sink.close();
+    }
     return zip.path;
   }
 
@@ -666,6 +723,25 @@ class MainActivity : FlutterActivity()
       .replaceAll('>', '&gt;')
       .replaceAll('"', '&quot;')
       .replaceAll("'", '&apos;');
+
+  static const _kotlinReserved = <String>{
+    'as', 'break', 'class', 'continue', 'do', 'else', 'false', 'for', 'fun',
+    'if', 'in', 'interface', 'is', 'null', 'object', 'package', 'return',
+    'super', 'this', 'throw', 'true', 'try', 'typealias', 'typeof', 'val',
+    'var', 'when', 'while',
+  };
+
+  /// Java/Kotlin package segments must start with a letter and avoid keywords.
+  String _safePkgSegment(String raw) {
+    final s = raw.toLowerCase().replaceAll(RegExp(r'[^a-z0-9_]'), '_');
+    final trimmed = s.replaceAll(RegExp(r'^_+|_+$'), '');
+    if (trimmed.isEmpty ||
+        !RegExp(r'^[a-z]').hasMatch(trimmed) ||
+        _kotlinReserved.contains(trimmed)) {
+      return 'app_${trimmed.isEmpty ? 'main' : trimmed}';
+    }
+    return trimmed;
+  }
 
   String _safeName(String raw) {
     final s = raw.toLowerCase().replaceAll(RegExp(r'[^a-z0-9_]+'), '_');

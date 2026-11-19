@@ -29,12 +29,18 @@ gp = Path("android/gradle.properties")
 text = gp.read_text(encoding="utf-8") if gp.exists() else ""
 lines = [l for l in text.splitlines()
          if not re.match(r"^(org\.gradle\.jvmargs|android\.useAndroidX|android\.aapt2FromMavenOverride|android\.enableResourceOptimizations)=", l)]
+aapt2 = f"{prefix}/bin/aapt2"
 lines += [
     "org.gradle.jvmargs=-Xmx2048m -XX:MaxMetaspaceSize=512m",
     "android.useAndroidX=true",
-    f"android.aapt2FromMavenOverride={prefix}/bin/aapt2",
-    "android.enableResourceOptimizations=false",
 ]
+# Only point Gradle at aapt2 when the binary actually exists; otherwise let
+# the Android Gradle Plugin resolve its own aapt2 from Maven (AUDIT L6).
+if Path(aapt2).exists():
+    lines.append(f"android.aapt2FromMavenOverride={aapt2}")
+else:
+    print(f"WARNING: aapt2 not found at {aapt2}; using AGP's Maven aapt2")
+lines.append("android.enableResourceOptimizations=false")
 gp.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
 
 # 2) app/build.gradle (Groovy, not build.gradle.kts) - ARM64 only, no
