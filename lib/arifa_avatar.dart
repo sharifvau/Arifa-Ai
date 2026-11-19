@@ -3,9 +3,13 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
-/// Visual states. Only five expressions are drawn; success/error reuse
-/// happy/sad with different body motion.
-enum AvatarMood { happy, listening, speaking, thinking, success, error }
+/// Visual states. Only five expressions are drawn; celebratory/alert motion
+/// is expressed separately with [AvatarEffect].
+enum AvatarMood { happy, listening, speaking, thinking, sad }
+
+/// Optional body motion layered on top of the five faces.
+/// `celebrate` replaces the old success motion, `alert` the old error motion.
+enum AvatarEffect { none, celebrate, alert }
 
 /// A hand-drawn, fully animated 2D ARIFA avatar. No image assets, no Rive
 /// file and no 3D engine needed — she is painted every frame.
@@ -13,11 +17,13 @@ class ArifaAvatar extends StatefulWidget {
   const ArifaAvatar({
     super.key,
     required this.mood,
+    this.effect = AvatarEffect.none,
     this.caption,
     this.scale = 1,
   });
 
   final AvatarMood mood;
+  final AvatarEffect effect;
   final String? caption;
   final double scale;
 
@@ -74,15 +80,17 @@ class _ArifaAvatarState extends State<ArifaAvatar>
         final talk = widget.mood == AvatarMood.speaking
             ? math.sin(_talk.value * math.pi * 2)
             : 0.0;
-        final jump = widget.mood == AvatarMood.success
+        final jump = widget.effect == AvatarEffect.celebrate
             ? math.sin(_talk.value * math.pi).abs()
             : 0.0;
         final lean = widget.mood == AvatarMood.listening ? 1.05 : 1.0;
-        final sway = switch (widget.mood) {
-          AvatarMood.thinking => -0.045,
-          AvatarMood.error => 0.02,
-          AvatarMood.listening => 0.0,
-          _ => 0.014 * wave,
+        final sway = switch (widget.effect) {
+          AvatarEffect.alert => 0.02,
+          _ => switch (widget.mood) {
+            AvatarMood.thinking => -0.045,
+            AvatarMood.listening => 0.0,
+            _ => 0.014 * wave,
+          },
         };
         final scale =
             widget.scale * lean * (1 + 0.012 * wave + 0.045 * jump);
@@ -105,9 +113,10 @@ class _ArifaAvatarState extends State<ArifaAvatar>
                       child: child,
                     ),
                     child: CustomPaint(
-                      key: ValueKey(widget.mood),
+                      key: ValueKey('${widget.mood}_${widget.effect}'),
                       painter: _AvatarPainter(
                         mood: widget.mood,
+                        effect: widget.effect,
                         blink: _blinking,
                         talk: talk,
                         time: t,
@@ -162,12 +171,14 @@ enum _Face { happy, listening, speaking, thinking, sad }
 class _AvatarPainter extends CustomPainter {
   _AvatarPainter({
     required this.mood,
+    required this.effect,
     required this.blink,
     required this.talk,
     required this.time,
   });
 
   final AvatarMood mood;
+  final AvatarEffect effect;
   final bool blink;
   final double talk;
   final double time;
@@ -177,8 +188,7 @@ class _AvatarPainter extends CustomPainter {
         AvatarMood.listening => _Face.listening,
         AvatarMood.speaking => _Face.speaking,
         AvatarMood.thinking => _Face.thinking,
-        AvatarMood.success => _Face.happy,
-        AvatarMood.error => _Face.sad,
+        AvatarMood.sad => _Face.sad,
       };
 
   @override
@@ -526,7 +536,7 @@ class _AvatarPainter extends CustomPainter {
     final sleeve = Paint()..color = const Color(0xFF0B4C7A);
     final handY = h * 0.80;
 
-    if (mood == AvatarMood.success) {
+    if (effect == AvatarEffect.celebrate) {
       final clap = w * (0.055 + 0.025 * talk.abs());
       for (final s in [-1.0, 1.0]) {
         final hc = Offset(cx + s * clap, h * 0.72);

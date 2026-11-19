@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
-"""Generate ARIFA launcher icons without any external image library."""
+"""Generate ARIFA launcher icons from assets/icon/arifa_icon.png.
+
+Stdlib only. When the master PNG is present every mipmap is derived from it;
+when it is missing it is drawn once from the in-memory fallback and saved.
+"""
 
 import math
-import os
 import struct
 import zlib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+SOURCE_ICON = ROOT / "assets" / "icon" / "arifa_icon.png"
 
 FONT = {
     "A": ["01110", "10001", "10001", "11111", "10001", "10001", "10001"],
@@ -73,6 +77,7 @@ class Canvas:
 
 
 def draw_icon(size, round_mask=False):
+    """Fallback drawing, used only to create the master PNG when it is absent."""
     c = Canvas(size)
     cx = cy = size / 2
 
@@ -135,16 +140,11 @@ def draw_icon(size, round_mask=False):
     c.text(word, scale, tx, ty, (190, 250, 255), 255)
 
     if round_mask:
-        for y in range(size):
-            for x in range(size):
-                d = math.hypot(x - cx, y - cy) / (size / 2)
-                i = (y * size + x) * 4
-                if d >= 1.0:
-                    c.px[i + 3] = 0
-                elif d > 0.985:
-                    c.px[i + 3] = int(c.px[i + 3] * (1.0 - d) / 0.015)
-
+        return apply_round_mask(c.px, size)
     return c.px
+
+
+# --- PNG input/output -----------------------------------------------------
 
 
 def chunk(tag, data):
@@ -167,11 +167,198 @@ def write_png(path, size, pixels):
         + chunk(b"IDAT", zlib.compress(raw, 9))
         + chunk(b"IEND", b"")
     )
+    path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(png)
 
 
+def _paeth(a, b, c):
+    p = a + b - c
+    pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+    if pa <= pb and pa <= pc:
+        return a
+    if pb <= pc:
+        return b
+    return c
+
+
+def _unpack_samples(row, width, bit_depth, channels):
+    if bit_depth == 8:
+        return [row[i] for i in range(width * channels)]
+    if bit_depth == 16:
+        return [row[i * 2] for i in range(width * channels)]
+    per_byte = 8 // bit_depth
+    mask = (1 << bit_depth) - 1
+    out = []
+    for byte in row:
+        for shift in range(8 - bit_depth, -1, -bit_depth):
+            out.append((byte >> shift) & mask)
+    return out[: width * channels]
+
+
+def read_png(path):
+    """Decode a non-interlaced PNG into (width, height, RGBA bytearray)."""
+    path = Path(path)
+    blob = path.read_bytes()
+    if not blob.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise ValueError(f"Not a PNG file: {path}")
+    pos = 8
+    width = height = bit_depth = color_type = interlace = None
+    palette = b""
+    transparent = b""
+    idat = bytearray()
+    while pos + 12 <= len(blob):
+        length = struct.unpack(">I", blob[pos : pos + 4])[0]
+        tag = blob[pos + 4 : pos + 8]
+        data = blob[pos + 8 : pos + 8 + length]
+        pos += 12 + length
+        if tag == b"IHDR":
+            (
+                width,
+                height,
+                bit_depth,
+                color_type,
+                _compression,
+                _filter,
+                interlace,
+            ) = struct.unpack(">IIBBBBB", data)
+        elif tag == b"PLTE":
+            palette = data
+        elif tag == b"tRNS":
+            transparent = data
+        elif tag == b"IDAT":
+            idat.extend(data)
+        elif tag == b"IEND":
+            break
+    if not width or not height:
+        raise ValueError(f"PNG has no IHDR: {path}")
+    if interlace != 0:
+        raise ValueError(f"Interlaced PNGs are not supported: {path}")
+    if bit_depth not in (1, 2, 4, 8, 16):
+        raise ValueError(f"Unsupported PNG bit depth {bit_depth}: {path}")
+    channels = {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}.get(color_type)
+    if channels is None:
+        raise ValueError(f"Unsupported PNG colour type {color_type}: {path}")
+    if color_type == 3 and not palette:
+        raise ValueError(f"Palette PNG without PLTE: {path}")
+
+    raw = zlib.decompress(bytes(idat))
+    row_bytes = (width * channels * bit_depth + 7) // 8
+    filter_bytes = max(1, (channels * bit_depth + 7) // 8)
+    gray_scale = 255 / ((1 << bit_depth) - 1) if bit_depth < 8 else 1
+    trns_gray = None
+    if len(transparent) >= 2:
+        trns_gray = transparent[0] if bit_depth == 16 else transparent[1]
+    trns_rgb = None
+    if len(transparent) >= 6:
+        trns_rgb = tuple(transparent[i] for i in (0, 2, 4))
+
+    pos = 0
+    prev = bytearray(row_bytes)
+    out = bytearray(width * height * 4)
+    for y in range(height):
+        if pos + row_bytes + 1 > len(raw):
+            raise ValueError(f"Truncated PNG image data: {path}")
+        filter_type = raw[pos]
+        row = bytearray(raw[pos + 1 : pos + 1 + row_bytes])
+        pos += 1 + row_bytes
+        if filter_type == 1:
+            for i in range(filter_bytes, row_bytes):
+                row[i] = (row[i] + row[i - filter_bytes]) & 255
+        elif filter_type == 2:
+            for i in range(row_bytes):
+                row[i] = (row[i] + prev[i]) & 255
+        elif filter_type == 3:
+            for i in range(row_bytes):
+                left = row[i - filter_bytes] if i >= filter_bytes else 0
+                row[i] = (row[i] + ((left + prev[i]) // 2)) & 255
+        elif filter_type == 4:
+            for i in range(row_bytes):
+                left = row[i - filter_bytes] if i >= filter_bytes else 0
+                upper_left = prev[i - filter_bytes] if i >= filter_bytes else 0
+                row[i] = (row[i] + _paeth(left, prev[i], upper_left)) & 255
+        elif filter_type != 0:
+            raise ValueError(f"Unsupported PNG filter {filter_type}: {path}")
+        prev = row
+
+        samples = _unpack_samples(row, width, bit_depth, channels)
+        for x in range(width):
+            s = samples[x * channels : (x + 1) * channels]
+            i = (y * width + x) * 4
+            if color_type == 0:
+                g = int(s[0] * gray_scale)
+                r = blue = g
+                alpha = 0 if trns_gray is not None and s[0] == trns_gray else 255
+            elif color_type == 2:
+                r, g, blue = s[0], s[1], s[2]
+                alpha = 0 if trns_rgb is not None and tuple(s[:3]) == trns_rgb else 255
+            elif color_type == 3:
+                idx = s[0]
+                if idx * 3 + 2 >= len(palette):
+                    raise ValueError(f"Palette index out of range: {path}")
+                r, g, blue = palette[idx * 3 : idx * 3 + 3]
+                alpha = transparent[idx] if idx < len(transparent) else 255
+            elif color_type == 4:
+                r = g = blue = s[0]
+                alpha = s[1]
+            else:  # colour type 6, RGBA
+                r, g, blue, alpha = s[0], s[1], s[2], s[3]
+            out[i] = r
+            out[i + 1] = g
+            out[i + 2] = blue
+            out[i + 3] = alpha
+    return width, height, out
+
+
+def resize_rgba(pixels, src_w, src_h, dst_w, dst_h):
+    """Bilinear RGBA resize from the master icon to a launcher density."""
+    if (src_w, src_h) == (dst_w, dst_h):
+        return bytearray(pixels)
+    out = bytearray(dst_w * dst_h * 4)
+    for y in range(dst_h):
+        fy = (y + 0.5) * src_h / dst_h - 0.5
+        y0 = max(0, min(src_h - 1, math.floor(fy)))
+        y1 = max(0, min(src_h - 1, y0 + 1))
+        wy = min(1.0, max(0.0, fy - y0))
+        for x in range(dst_w):
+            fx = (x + 0.5) * src_w / dst_w - 0.5
+            x0 = max(0, min(src_w - 1, math.floor(fx)))
+            x1 = max(0, min(src_w - 1, x0 + 1))
+            wx = min(1.0, max(0.0, fx - x0))
+            o = (y * dst_w + x) * 4
+            for c in range(4):
+                p00 = pixels[(y0 * src_w + x0) * 4 + c]
+                p01 = pixels[(y0 * src_w + x1) * 4 + c]
+                p10 = pixels[(y1 * src_w + x0) * 4 + c]
+                p11 = pixels[(y1 * src_w + x1) * 4 + c]
+                top = p00 + (p01 - p00) * wx
+                bottom = p10 + (p11 - p10) * wx
+                out[o + c] = int(round(top + (bottom - top) * wy))
+    return out
+
+
+def apply_round_mask(pixels, size):
+    """Circular alpha mask with a short antialiased edge for the round icon."""
+    out = bytearray(pixels)
+    cx = cy = (size - 1) / 2.0
+    radius = size / 2.0
+    for y in range(size):
+        for x in range(size):
+            d = math.hypot(x - cx, y - cy) / radius
+            i = (y * size + x) * 4
+            if d >= 1.0:
+                out[i + 3] = 0
+            elif d > 0.95:
+                out[i + 3] = int(out[i + 3] * (1.0 - d) / 0.05)
+    return out
+
+
 def main():
+    if not SOURCE_ICON.is_file():
+        write_png(SOURCE_ICON, 512, draw_icon(512))
+        print(f"Created {SOURCE_ICON.relative_to(ROOT)} from the fallback drawing.")
+
+    src_w, src_h, src_px = read_png(SOURCE_ICON)
     densities = {
         "mdpi": 48,
         "hdpi": 72,
@@ -181,11 +368,11 @@ def main():
     }
     for name, size in densities.items():
         res = ROOT / "android" / "app" / "src" / "main" / "res" / f"mipmap-{name}"
-        write_png(res / "ic_launcher.png", size, draw_icon(size))
-        write_png(res / "ic_launcher_round.png", size, draw_icon(size, True))
+        scaled = resize_rgba(src_px, src_w, src_h, size, size)
+        write_png(res / "ic_launcher.png", size, scaled)
+        write_png(res / "ic_launcher_round.png", size, apply_round_mask(scaled, size))
 
-    write_png(ROOT / "assets" / "icon" / "arifa_icon.png", 512, draw_icon(512))
-    print("ARIFA launcher icons generated.")
+    print(f"ARIFA launcher icons generated from {SOURCE_ICON.relative_to(ROOT)}.")
 
 
 if __name__ == "__main__":

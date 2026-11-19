@@ -88,6 +88,17 @@ class AutoReplyService {
   static const _logKey = 'whatsapp_reply_log_v1';
   static const _channelId = 'arifa_channel';
 
+  /// Hard budget for deciding a reply. A slow cloud brain never pushes the
+  /// whole incoming -> sent flow past ~2s.
+  static const Duration _replyDeadline = Duration(seconds: 2);
+
+  /// Per-contact throttle: at most 3 replies in any rolling 60s window.
+  static const int _maxRepliesPerWindow = 3;
+  static const Duration _rateWindow = Duration(seconds: 60);
+
+  /// Only the newest 50 reply logs are kept in encrypted storage.
+  static const int _logCap = 50;
+
   final List<AutoReplyLogEntry> _logs = <AutoReplyLogEntry>[];
   final StreamController<List<AutoReplyLogEntry>> _logsCtrl =
       StreamController<List<AutoReplyLogEntry>>.broadcast();
@@ -98,6 +109,7 @@ class AutoReplyService {
 
   final List<IncomingWhatsAppMessage> _queue = <IncomingWhatsAppMessage>[];
   final List<String> _recent = <String>[];
+  final Map<String, List<DateTime>> _replyTimes = <String, List<DateTime>>{};
   bool _started = false;
   bool _draining = false;
 
@@ -112,7 +124,6 @@ class AutoReplyService {
     if (_started) return;
     _started = true;
 
-    await _listener.init();
     _whatsapp = WhatsAppService(listener: _listener);
     _brain = ArifaBrain();
     _notifications = FlutterLocalNotificationsPlugin();
@@ -123,8 +134,11 @@ class AutoReplyService {
     );
     await _loadLogs();
 
+    // Subscribe before init(): NotificationListener.init() replays anything
+    // queued during process death into this stream.
     _listener.incoming.listen(_queueMessage);
     _listener.status.listen((s) => _statusCtrl.add(s));
+    await _listener.init();
     await refreshConfig();
   }
 
@@ -174,9 +188,10 @@ class AutoReplyService {
       if (raw == null || raw.trim().isEmpty) return;
       final decoded = jsonDecode(raw) as List;
       _logs.addAll(
-        decoded.whereType<Map<String, dynamic>>().map(
-          AutoReplyLogEntry.fromJson,
-        ),
+        decoded
+            .whereType<Map<String, dynamic>>()
+            .map(AutoReplyLogEntry.fromJson)
+            .take(_logCap),
       );
       if (!_logsCtrl.isClosed) _logsCtrl.add(List.unmodifiable(_logs));
     } catch (_) {
@@ -186,7 +201,7 @@ class AutoReplyService {
 
   Future<void> _persistLogs() async {
     try {
-      final capped = _logs.take(200).toList();
+      final capped = _logs.take(_logCap).toList();
       await _storage.write(
         key: _logKey,
         value: jsonEncode(capped.map((e) => e.toJson()).toList()),
@@ -203,6 +218,8 @@ class AutoReplyService {
     if (_recent.contains(fingerprint)) return;
     _recent.add(fingerprint);
     if (_recent.length > 80) _recent.removeAt(0);
+
+    if (_rateLimited(msg.contact)) return;
 
     _queue.add(msg);
     _drain();
@@ -232,10 +249,13 @@ class AutoReplyService {
     }
     if (important) await _notifyImportant(msg);
 
-    final decision = await _decideReply(msg, s);
+    final decision = await _decideReply(msg, s).timeout(
+      _replyDeadline,
+      onTimeout: () => _ReplyDecision(_localReply(msg, s), ReplySource.local),
+    );
 
-    // Human-like beat before the send. Everything above is local and instant.
-    await Future<void>.delayed(const Duration(milliseconds: 500));
+    // Short human-like beat before the send; keeps the whole flow ~1-2s.
+    await Future<void>.delayed(const Duration(milliseconds: 120));
     if (!_statusCtrl.isClosed) {
       _statusCtrl.add('${msg.contact}: sending...');
     }
@@ -337,13 +357,29 @@ class AutoReplyService {
     return samples;
   }
 
+  /// Every local fallback branch speaks in the user's own Bangla+English
+  /// style when samples are saved. The canned line is only the no-training
+  /// fallback, so replies never sound like a generic bot.
+  String _styled(String builtIn, SettingsService s, int hash) {
+    final samples = s.whatsappStyleSamples
+        .map((e) => e.trim())
+        .where((e) => e.isNotEmpty)
+        .toList(growable: false);
+    if (samples.isEmpty) return builtIn;
+    return samples[hash.abs() % samples.length];
+  }
+
   String _localReply(IncomingWhatsAppMessage msg, SettingsService s) {
     final text = msg.message.toLowerCase().trim();
     final hash = msg.message.hashCode ^ msg.contact.hashCode;
     final emoji = hash.abs() % 3 == 0 ? ' ♥' : '';
 
     if (!_isAllowed(msg.contact) && s.whatsappReplyUnknown) {
-      return 'Ke bolchen? Emon Bhai ekhon busy, pore reply dibe';
+      return _styled(
+        'Ke bolchen? Emon Bhai ekhon busy, pore reply dibe',
+        s,
+        hash,
+      );
     }
 
     if (RegExp(
@@ -351,36 +387,44 @@ class AutoReplyService {
       r'কোড|কাজ|অফিস|মিটিং|বানা|টাকা',
       caseSensitive: false,
     ).hasMatch(text)) {
-      return 'Emon Bhai ektu busy ache, pore kotha bolbe, '
-          'tumi ki bolte chao amake bolo ami pouche dibo';
+      return _styled(
+        'Emon Bhai ektu busy ache, pore kotha bolbe, '
+        'tumi ki bolte chao amake bolo ami pouche dibo',
+        s,
+        hash,
+      );
     }
 
     if (RegExp(
       r'^(hi|hello|hey|yo|assalamu.?alaikum|আসসালামু|নমস্কার|adt)\b',
       caseSensitive: false,
     ).hasMatch(text)) {
-      return 'hi, kemon achos?$emoji';
+      return _styled('hi, kemon achos?$emoji', s, hash);
     }
 
     if (RegExp(
       r'kire koi tui|koi tui|কই তুই|কোথায় তুই|where are you',
       caseSensitive: false,
     ).hasMatch(text)) {
-      return 'are ei to achi, ektu busy chilam, bol ki khobor?';
+      return _styled(
+        'are ei to achi, ektu busy chilam, bol ki khobor?',
+        s,
+        hash,
+      );
     }
 
     if (RegExp(
       r'ki khobor|kemon achos|কেমন আছিস|খবর কী',
       caseSensitive: false,
     ).hasMatch(text)) {
-      return 'bhalo achi bhai, tumi ki khobor?$emoji';
+      return _styled('bhalo achi bhai, tumi ki khobor?$emoji', s, hash);
     }
 
     if (RegExp(
       r'thanks|thank you|ধন্যবাদ|ok|okay',
       caseSensitive: false,
     ).hasMatch(text)) {
-      return 'are kichu na bhai ♥';
+      return _styled('are kichu na bhai ♥', s, hash);
     }
 
     const builtIn = <String>[
@@ -415,12 +459,43 @@ class AutoReplyService {
     return false;
   }
 
+  /// Exact match only — 'Ali' must never match 'Alina'. '*' is the sole
+  /// wildcard. Phone numbers ignore formatting so +880 1712-345678 and
+  /// 01712345678 are treated as the same contact.
   bool _matches(String entry, String contact) {
-    final a = entry.trim().toLowerCase();
-    final b = contact.trim().toLowerCase();
+    final a = _normalize(entry);
+    final b = _normalize(contact);
     if (a.isEmpty || b.isEmpty) return false;
     if (a == '*') return true;
-    return a == b || b.contains(a) || a.contains(b);
+    return a == b;
+  }
+
+  String _normalize(String value) {
+    final trimmed = value.trim().toLowerCase();
+    if (trimmed.isEmpty) return '';
+    final digits = trimmed.replaceAll(RegExp(r'[^0-9]'), '');
+    if (digits.length >= 7 && RegExp(r'^[+\d\s().-]+$').hasMatch(trimmed)) {
+      if (digits.length == 11 && digits.startsWith('0')) {
+        return '880${digits.substring(1)}';
+      }
+      return digits;
+    }
+    return trimmed.replaceAll(RegExp(r'\s+'), ' ');
+  }
+
+  /// At most [_maxRepliesPerWindow] replies per contact in any rolling
+  /// [_rateWindow]. Normalized keys stop formatting tricks bypassing it.
+  bool _rateLimited(String contact) {
+    final now = DateTime.now();
+    final key = _normalize(contact);
+    final times = _replyTimes.putIfAbsent(key, () => <DateTime>[]);
+    times.removeWhere((t) => now.difference(t) >= _rateWindow);
+    if (times.length >= _maxRepliesPerWindow) return true;
+    times.add(now);
+    if (_replyTimes.length > 100) {
+      _replyTimes.removeWhere((_, value) => value.isEmpty);
+    }
+    return false;
   }
 
   String _asInternationalNumber(String value) {

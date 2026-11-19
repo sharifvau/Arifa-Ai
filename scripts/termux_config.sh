@@ -37,24 +37,25 @@ lines += [
 ]
 gp.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
 
-# 2) app/build.gradle.kts - ARM64 only, no minify/resource shrink (Termux RAM)
-bg = Path("android/app/build.gradle.kts")
+# 2) app/build.gradle (Groovy, not build.gradle.kts) - ARM64 only, no
+#    minify/resource shrink (Termux RAM). Keep the repo's SDK 34 pins.
+bg = Path("android/app/build.gradle")
 if bg.exists():
     s = bg.read_text(encoding="utf-8")
-    # Normalise SDK levels expected by Termux aapt2 if the template is older.
-    s = re.sub(r"compileSdk\s*=\s*\d+", "compileSdk = 36", s, count=1)
-    s = re.sub(r"targetSdk\s*=\s*\d+", "targetSdk = 36", s, count=1)
+    # Termux aapt2 expects these levels; do NOT bump past the compileSdk 34 pin.
+    s = re.sub(r"compileSdk\s*=\s*\d+", "compileSdk = 34", s, count=1)
+    s = re.sub(r"targetSdk\s*=\s*\d+", "targetSdk = 34", s, count=1)
     if "abiFilters" not in s:
         s = re.sub(
             r"(defaultConfig\s*\{)",
-            r'\1\n        ndk {\n            abiFilters += listOf("arm64-v8a")\n        }',
+            r'\1\n        ndk {\n            abiFilters "arm64-v8a"\n        }',
             s,
             count=1,
         )
-    if "isMinifyEnabled" not in s:
+    if "minifyEnabled" not in s:
         s = re.sub(
             r"(buildTypes\s*\{[\s\S]*?release\s*\{)",
-            r"\1\n            isMinifyEnabled = false\n            isShrinkResources = false",
+            r"\1\n            minifyEnabled false\n            shrinkResources false",
             s,
             count=1,
         )

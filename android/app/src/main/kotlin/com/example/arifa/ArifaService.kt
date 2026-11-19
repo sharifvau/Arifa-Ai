@@ -41,8 +41,28 @@ class ArifaService : Service() {
         const val ACTION_CAPTURE = "com.example.arifa.CAPTURE"
         const val CHANNEL_ID = "arifa_foreground"
         const val NOTIFICATION_ID = 1002
+        const val SCREEN_CAPTURE_FILE = "arifa_screen.jpg"
+        private const val MAX_CAPTURE_DIMENSION = 1280
+        private const val JPEG_QUALITY = 80
+
         @Volatile
         var isRunning = false
+
+        /** Registered by MainActivity while a capture request is in flight. */
+        @Volatile
+        var onCaptureDone: ((String?) -> Unit)? = null
+    }
+
+    /**
+     * Single exit point for a capture: UI still gets the event channel update,
+     * while MainActivity completes its pending MethodChannel.Result with the
+     * actual file path (posted to the main thread there).
+     */
+    private fun finishCapture(path: String?) {
+        MainActivity.emit("screen", path ?: "স্ক্রিনশট ব্যর্থ Emon Bhai")
+        val callback = onCaptureDone
+        onCaptureDone = null
+        callback?.invoke(path)
     }
 
     private var recognizer: SpeechRecognizer? = null
@@ -130,6 +150,7 @@ class ArifaService : Service() {
                     val heard = list?.firstOrNull().orEmpty()
                     if (heard.isNotBlank() && containsWake(heard)) {
                         MainActivity.emit("wake", heard)
+                        launchAppOnWake()
                     }
                     scheduleRestart()
                 }
@@ -139,6 +160,7 @@ class ArifaService : Service() {
                     val heard = list?.firstOrNull().orEmpty()
                     if (heard.isNotBlank() && containsWake(heard)) {
                         MainActivity.emit("wake", heard)
+                        launchAppOnWake()
                         recognizer?.stopListening()
                     }
                 }
@@ -165,6 +187,20 @@ class ArifaService : Service() {
         return wakeWords.any { lower.contains(it.lowercase()) }
     }
 
+    /**
+     * Bring ARIFA to the front when the wake word is heard in the background,
+     * so the Dart isolate is alive to answer and to drain pending WhatsApp
+     * replies. OEMs may block background activity starts — ignore failures.
+     */
+    private fun launchAppOnWake() {
+        val app = packageManager.getLaunchIntentForPackage(packageName) ?: return
+        app.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        try {
+            startActivity(app)
+        } catch (_: Exception) {
+        }
+    }
+
     private fun scheduleRestart() {
         handler?.postDelayed({
             if (isRunning) {
@@ -182,14 +218,14 @@ class ArifaService : Service() {
         @Suppress("DEPRECATION")
         val data = intent.getParcelableExtra("data") as? Intent
         if (data == null || resultCode == 0) {
-            MainActivity.emit("screen", "MediaProjection data পাইনি")
+            finishCapture(null)
             return
         }
         val manager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         val projection = try {
             manager.getMediaProjection(resultCode, data)
         } catch (e: Exception) {
-            MainActivity.emit("screen", "MediaProjection fail: ${e.message}")
+            finishCapture(null)
             return
         }
 
@@ -219,15 +255,35 @@ class ArifaService : Service() {
                 )
                 bitmap.copyPixelsFromBuffer(buffer)
                 val cropped = Bitmap.createBitmap(bitmap, 0, 0, width, height)
-                val file = File(cacheDir, "arifa_screen.jpg")
-                FileOutputStream(file).use { out ->
-                    cropped.compress(Bitmap.CompressFormat.JPEG, 80, out)
+
+                // Downscale natively before saving so Gemini inline_data stays
+                // comfortably below its ~4MB limit: max edge 1280px, quality 80.
+                val longest = maxOf(cropped.width, cropped.height)
+                val scale = minOf(1f, MAX_CAPTURE_DIMENSION.toFloat() / longest.toFloat())
+                val scaled = if (scale < 1f) {
+                    Bitmap.createScaledBitmap(
+                        cropped,
+                        (cropped.width * scale).toInt().coerceAtLeast(1),
+                        (cropped.height * scale).toInt().coerceAtLeast(1),
+                        true,
+                    )
+                } else {
+                    cropped
                 }
-                MainActivity.emit("screen", file.absolutePath)
-                bitmap.recycle()
+
+                val file = File(cacheDir, SCREEN_CAPTURE_FILE)
+                if (file.exists() && !file.delete()) {
+                    Log.w("ArifaService", "Could not delete previous screenshot")
+                }
+                FileOutputStream(file).use { out ->
+                    scaled.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, out)
+                }
+                finishCapture(file.absolutePath)
+                if (scaled !== cropped) scaled.recycle()
                 cropped.recycle()
+                bitmap.recycle()
             } catch (e: Exception) {
-                MainActivity.emit("screen", "Screenshot fail: ${e.message}")
+                finishCapture(null)
             } finally {
                 image.close()
                 display?.release()
@@ -244,6 +300,7 @@ class ArifaService : Service() {
 
     override fun onDestroy() {
         isRunning = false
+        onCaptureDone = null
         try {
             recognizer?.stopListening()
             recognizer?.destroy()

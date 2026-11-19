@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/services.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 /// One incoming WhatsApp message, reconstructed from a Notification Listener
 /// event. Only the contact name, the message body and the notification key are
@@ -53,10 +54,21 @@ class NotificationListener {
   static const MethodChannel _method = MethodChannel('arifa/native');
   static const EventChannel _event = EventChannel('arifa/whatsapp_events');
 
+  /// Encrypted queue of notifications that arrived while no Dart isolate was
+  /// alive. A fresh isolate drains it on init so no allowed message is lost.
+  static const _pendingKey = 'wa_pending_messages';
+  static const _pendingCap = 50;
+  final FlutterSecureStorage _storage = const FlutterSecureStorage(
+    aOptions: AndroidOptions(),
+  );
+
   final StreamController<IncomingWhatsAppMessage> _incoming =
       StreamController<IncomingWhatsAppMessage>.broadcast();
   final StreamController<String> _status = StreamController<String>.broadcast();
   StreamSubscription<dynamic>? _sub;
+
+  /// Serializes read-modify-write of the pending queue between bursts.
+  Future<void> _pendingWrite = Future<void>.value();
 
   Stream<IncomingWhatsAppMessage> get incoming => _incoming.stream;
   Stream<String> get status => _status.stream;
@@ -67,6 +79,68 @@ class NotificationListener {
       _onEvent,
       onError: (Object e) => _status.add('[notification listener] $e'),
     );
+    // Messages queued during process death are replayed into _incoming here.
+    // AutoReplyService subscribes before calling init(), so nothing is lost.
+    await drainPending();
+  }
+
+  /// Replays the encrypted pending queue into [_incoming] and clears it.
+  /// Returns how many messages were handed back to Dart.
+  Future<int> drainPending() async {
+    var drained = 0;
+    // Share the write chain so a burst arriving mid-drain is never lost or
+    // replayed twice on the next startup.
+    _pendingWrite = _pendingWrite.then((_) async {
+      try {
+        final raw = await _storage.read(key: _pendingKey);
+        if (raw == null || raw.trim().isEmpty) return;
+        await _storage.delete(key: _pendingKey);
+
+        final decoded = jsonDecode(raw);
+        if (decoded is! List) return;
+
+        for (final item in decoded) {
+          if (item is! String || item.isEmpty) continue;
+          try {
+            final message = IncomingWhatsAppMessage.fromJson(
+              jsonDecode(item) as Map<String, dynamic>,
+            );
+            if (message.contact.isEmpty || message.message.isEmpty) continue;
+            _incoming.add(message);
+            drained++;
+          } catch (_) {
+            // A corrupt row is dropped; the rest of the queue still replays.
+          }
+        }
+      } catch (_) {
+        // A storage failure never blocks startup.
+      }
+    });
+    await _pendingWrite;
+    return drained;
+  }
+
+  /// Persists raw JSON so a fresh isolate can reconstruct the message even if
+  /// the event channel was never attached in the previous process.
+  Future<void> _queuePending(String payload) {
+    _pendingWrite = _pendingWrite.then((_) async {
+      try {
+        final raw = await _storage.read(key: _pendingKey);
+        final list = <String>[];
+        if (raw != null && raw.trim().isNotEmpty) {
+          final decoded = jsonDecode(raw);
+          if (decoded is List) list.addAll(decoded.whereType<String>());
+        }
+        list.add(payload);
+        if (list.length > _pendingCap) {
+          list.removeRange(0, list.length - _pendingCap);
+        }
+        await _storage.write(key: _pendingKey, value: jsonEncode(list));
+      } catch (_) {
+        // Storage failure must never block a live reply.
+      }
+    });
+    return _pendingWrite;
   }
 
   void _onEvent(dynamic event) {
@@ -78,6 +152,9 @@ class NotificationListener {
         final decoded = jsonDecode(payload) as Map<String, dynamic>;
         final message = IncomingWhatsAppMessage.fromJson(decoded);
         if (message.contact.isNotEmpty && message.message.isNotEmpty) {
+          // Survive process death: native has already applied the allow-list,
+          // so it is safe to keep this payload for the next Dart isolate.
+          unawaited(_queuePending(payload));
           _incoming.add(message);
         }
       } catch (_) {
@@ -159,6 +236,7 @@ class NotificationListener {
 
   Future<void> dispose() async {
     await _sub?.cancel();
+    await _pendingWrite;
     await _incoming.close();
     await _status.close();
   }

@@ -17,6 +17,19 @@ if (flutterVersionCode == null) flutterVersionCode = "1"
 def flutterVersionName = localProperties.getProperty("flutter.versionName")
 if (flutterVersionName == null) flutterVersionName = "1.0"
 
+// Optional release signing. CI writes android/key.properties only when the
+// keystore secrets are configured; local/debug builds have no such file.
+def keystoreProperties = new Properties()
+def keystorePropertiesFile = rootProject.file("key.properties")
+if (keystorePropertiesFile.exists()) {
+    keystorePropertiesFile.withReader("UTF-8") { reader -> keystoreProperties.load(reader) }
+}
+def hasReleaseKeystore = keystorePropertiesFile.exists() &&
+        keystoreProperties.getProperty("storeFile") != null &&
+        keystoreProperties.getProperty("storePassword") != null &&
+        keystoreProperties.getProperty("keyAlias") != null &&
+        keystoreProperties.getProperty("keyPassword") != null
+
 android {
     namespace = "com.example.arifa"
     compileSdk = 34
@@ -42,10 +55,24 @@ android {
         versionName = flutterVersionName
     }
 
+    signingConfigs {
+        release {
+            if (hasReleaseKeystore) {
+                storeFile rootProject.file(keystoreProperties.getProperty("storeFile"))
+                storePassword keystoreProperties.getProperty("storePassword")
+                keyAlias keystoreProperties.getProperty("keyAlias")
+                keyPassword keystoreProperties.getProperty("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         release {
-            // Debug keys so CI can build a release APK without a keystore.
-            signingConfig = signingConfigs.debug
+            // Real release key when android/key.properties exists, otherwise
+            // debug keys so CI/local builds without secrets still succeed.
+            signingConfig = hasReleaseKeystore
+                    ? signingConfigs.release
+                    : signingConfigs.debug
         }
     }
 }

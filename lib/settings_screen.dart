@@ -25,6 +25,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final _gemini = TextEditingController();
   final _openRouter = TextEditingController();
   final _customId = TextEditingController();
+  final _voiceName = TextEditingController();
 
   // WhatsApp Auto Reply controls
   final _waAllowInput = TextEditingController();
@@ -64,6 +65,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _gemini.text = s.geminiKey;
     _openRouter.text = s.openRouterKey;
     _voice = s.voice;
+    _voiceName.text = s.ttsVoiceName;
     _wake = s.wakeEnabled;
 
     _waEnabled = s.whatsappAutoReply;
@@ -91,6 +93,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _gemini.dispose();
     _openRouter.dispose();
     _customId.dispose();
+    _voiceName.dispose();
     _waAllowInput.dispose();
     _waCustomContact.dispose();
     _waCustomReply.dispose();
@@ -141,6 +144,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         gemini: _gemini.text,
         openRouter: _openRouter.text,
         selectedVoice: _voice,
+        selectedVoiceName: _voiceName.text,
         selectedWake: _wake,
         whatsappAutoReplyEnabled: _waEnabled,
         whatsappAllow: _waAllow,
@@ -166,6 +170,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _snack('সেভ করা যায়নি Emon Bhai: $e');
     } finally {
       if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  /// Store the exact Android TTS voice name so VoiceService applies it with
+  /// setVoice instead of guessing from keywords. Empty clears the override.
+  Future<void> _nominateVoice() async {
+    final name = _voiceName.text.trim();
+    try {
+      await SettingsService.instance.saveVoiceName(name);
+      _snack(
+        name.isEmpty
+            ? 'Exact voice clear হয়েছে — Save চাপুন Emon Bhai ♥'
+            : 'Exact voice "$name" নমিনেট হয়েছে Emon Bhai ♥',
+      );
+    } catch (e) {
+      _snack('Voice nominate fail: $e');
     }
   }
 
@@ -368,6 +388,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         list.add({'id': id, 'name': name});
       }
       list.sort((a, b) => a['id']!.compareTo(b['id']!));
+      if (!mounted) return;
       setState(() => _fetched = list);
       await _showFetchedSheet();
     } catch (e) {
@@ -530,20 +551,56 @@ class _SettingsScreenState extends State<SettingsScreen> {
             icon: Icons.record_voice_over_outlined,
             title: 'Voice Selector',
             subtitle: 'ARIFA কেমন শব্দে কথা বলবে',
-            child: DropdownButtonFormField<VoiceChoice>(
-              value: _voice,
-              dropdownColor: const Color(0xFF0A1B2E),
-              style: const TextStyle(color: Colors.white),
-              decoration: const InputDecoration(
-                border: OutlineInputBorder(),
-                enabledBorder: OutlineInputBorder(
-                  borderSide: BorderSide(color: Colors.cyanAccent),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                DropdownButtonFormField<VoiceChoice>(
+                  value: _voice,
+                  dropdownColor: const Color(0xFF0A1B2E),
+                  style: const TextStyle(color: Colors.white),
+                  decoration: const InputDecoration(
+                    border: OutlineInputBorder(),
+                    enabledBorder: OutlineInputBorder(
+                      borderSide: BorderSide(color: Colors.cyanAccent),
+                    ),
+                  ),
+                  items: VoiceChoice.values
+                      .map(
+                        (v) => DropdownMenuItem(value: v, child: Text(v.label)),
+                      )
+                      .toList(),
+                  onChanged: (v) => setState(() => _voice = v ?? _voice),
                 ),
-              ),
-              items: VoiceChoice.values
-                  .map((v) => DropdownMenuItem(value: v, child: Text(v.label)))
-                  .toList(),
-              onChanged: (v) => setState(() => _voice = v ?? _voice),
+                const SizedBox(height: 10),
+                TextField(
+                  controller: _voiceName,
+                  style: const TextStyle(color: Colors.white, fontSize: 12),
+                  decoration: const InputDecoration(
+                    labelText: 'Nominate exact voice (TTS name)',
+                    labelStyle: TextStyle(
+                      color: Colors.cyanAccent,
+                      fontSize: 11,
+                    ),
+                    hintText: 'খালি রাখলে ডিফল্ট ভয়েস বেছে নেবে',
+                    hintStyle: TextStyle(color: Colors.white24, fontSize: 11),
+                    border: OutlineInputBorder(),
+                    enabledBorder: OutlineInputBorder(
+                      borderSide: BorderSide(color: Colors.cyanAccent),
+                    ),
+                  ),
+                ),
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: TextButton.icon(
+                    onPressed: _nominateVoice,
+                    icon: const Icon(Icons.check_circle_outline, size: 16),
+                    label: const Text('Nominate exact voice'),
+                    style: TextButton.styleFrom(
+                      foregroundColor: Colors.cyanAccent,
+                    ),
+                  ),
+                ),
+              ],
             ),
           ),
           const SizedBox(height: 14),

@@ -39,6 +39,26 @@ class ArifaNotificationListener : NotificationListenerService() {
                 false
             }
         }
+
+        /**
+         * Exact allow-list matching. Names are compared after trimming,
+         * lowercasing and collapsing whitespace; phone numbers are normalised
+         * to a 880-prefixed digit string so formatting cannot bypass the gate.
+         * No substring matching — "Ali" must not match "Alina".
+         */
+        private fun normalize(value: String): String {
+            val t = value.trim().lowercase().replace(Regex("\\s+"), " ")
+            val digits = t.replace(Regex("[^0-9]"), "")
+            return if (digits.length >= 7 && t.matches(Regex("^[+\\d\\s().-]+$"))) {
+                if (digits.length == 11 && digits.startsWith("0")) {
+                    "880" + digits.substring(1)
+                } else {
+                    digits
+                }
+            } else {
+                t
+            }
+        }
     }
 
     private var prefs: SharedPreferences? = null
@@ -96,8 +116,8 @@ class ArifaNotificationListener : NotificationListenerService() {
         val lowerText = text.lowercase()
         if (lowerText.contains("typing") || (lowerText.contains("...") && text.length < 8)) return
 
-        val lowerTitle = title.lowercase()
-        if (!allowed.any { it == "*" || lowerTitle.contains(it) || it.contains(lowerTitle) }) return
+        val normalizedTitle = normalize(title)
+        if (!allowed.any { it == "*" || normalize(it) == normalizedTitle }) return
 
         n.contentIntent?.let { pending[notification.key] = it }
 

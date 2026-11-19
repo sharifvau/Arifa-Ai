@@ -3,6 +3,9 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# Never ship Flutter's default launcher icons.
+python3 scripts/generate_icon.py
+
 flutter pub get
 
 if [ -n "${PREFIX:-}" ]; then

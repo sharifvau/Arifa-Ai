@@ -1,4 +1,5 @@
 import 'package:flutter/services.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 /// Android Intent + Accessibility based phone actions.
 ///
@@ -28,6 +29,22 @@ class PhoneControl {
 
   Future<String> call(String number) =>
       _call('call', {'number': number});
+
+  /// Requests CALL_PHONE + SEND_SMS together. Returns true only when both are
+  /// granted, so callers can switch direct call()/sendSms() on with one check.
+  Future<bool> requestPhonePermissions() async {
+    final statuses = await <Permission>[
+      Permission.phone,
+      Permission.sms,
+    ].request();
+    return statuses[Permission.phone]?.isGranted == true &&
+        statuses[Permission.sms]?.isGranted == true;
+  }
+
+  /// Sends an SMS through native SmsManager (or the default SMS app as a
+  /// fallback). Native owns the actual send — this is just the channel call.
+  Future<String> sendSms(String phone, String body) =>
+      _call('sendSms', {'phone': phone, 'body': body});
 
   /// Opens WhatsApp with prefilled text. Auto-tap is attempted via the
   /// accessibility service, but WhatsApp may require the user to confirm.

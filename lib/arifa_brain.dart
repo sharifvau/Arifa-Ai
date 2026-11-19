@@ -150,7 +150,7 @@ ${samples.isEmpty ? '' : 'আমার আগের কথার স্টাই
       ],
       jsonMode: false,
       maxTokens: 100,
-    ).timeout(const Duration(milliseconds: 1100));
+    ).timeout(const Duration(milliseconds: 700));
 
     final clean = stripCodeBlocks(text).trim().replaceAll(RegExp(r'\s+'), ' ');
     if (clean.isEmpty) throw BrainException('empty fast reply');
@@ -462,10 +462,13 @@ Rules:
         .post(
           Uri.parse(
             '${ArifaConstants.geminiEndpoint}/'
-            '${Uri.encodeComponent(cleanModel)}:generateContent'
-            '?key=${Uri.encodeQueryComponent(key)}',
+            '${Uri.encodeComponent(cleanModel)}:generateContent',
           ),
-          headers: {'Content-Type': 'application/json'},
+          // Key goes in the header so it never lands in a URL or access log.
+          headers: {
+            'Content-Type': 'application/json',
+            'x-goog-api-key': key,
+          },
           body: jsonEncode(body),
         )
         .timeout(const Duration(seconds: 90));

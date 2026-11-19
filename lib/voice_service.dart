@@ -67,14 +67,32 @@ class VoiceService {
       // on some Android engines. Normalise it before using typed operators.
       final rawVoices = await _tts.getVoices;
       final voices = rawVoices is List ? rawVoices : const <dynamic>[];
+
+      // An exact name nominated in Settings always wins.
+      final nominated = _settings.ttsVoiceName.trim();
+      if (nominated.isNotEmpty) {
+        final exact = voices.where((v) {
+          return v is Map && v['name'].toString() == nominated;
+        }).firstOrNull;
+        final name = exact is Map ? exact['name'].toString() : nominated;
+        final voiceLocale = exact is Map && exact['locale'] != null
+            ? exact['locale'].toString()
+            : locale;
+        await _tts.setVoice({'name': name, 'locale': voiceLocale});
+        _voiceUsed = '$name ($voiceLocale)';
+        return;
+      }
+
       final localeVoices = voices.where((v) {
         final l = (v is Map ? v['locale'] : '').toString().toLowerCase();
         return l.startsWith(locale.split('-').first.toLowerCase());
       }).toList();
 
+      // 'google' is not a gender hint: Google ships both male and female
+      // engines whose names contain it, so it must not pick a voice here.
       final femaleWords = [
         'female', 'woman', 'zira', 'samantha', 'victoria', 'karen',
-        'google', 'বাংলা', 'নারী', 'মহিলা',
+        'বাংলা', 'নারী', 'মহিলা',
       ];
       final maleWords = [
         'male', 'man', 'david', 'daniel', 'google', 'পুরুষ', 'পুরুষবাচক',
@@ -83,18 +101,33 @@ class VoiceService {
           ? maleWords
           : femaleWords;
 
-      final preferred = localeVoices.where((v) {
+      bool matches(dynamic v) {
         final name = (v is Map ? v['name'] : '').toString().toLowerCase();
         return keywords.any(name.contains);
-      });
+      }
 
-      final chosen = (preferred.isNotEmpty ? preferred : localeVoices).firstOrNull;
+      // Exact locale matches first (bn-BD for Bangladeshi Bengali), then the
+      // wider language pool (bn-*), so a Bengali female voice is not beaten
+      // by a generic engine from another region.
+      final exactLocale = localeVoices.where((v) {
+        final l = (v is Map ? v['locale'] : '').toString().toLowerCase();
+        return l == locale.toLowerCase();
+      }).toList();
+      final exactMatches = exactLocale.where(matches).toList();
+      final generalMatches = localeVoices.where(matches).toList();
+      final candidates = <dynamic>[
+        ...exactMatches,
+        ...generalMatches.where((v) => !exactMatches.contains(v)),
+        ...exactLocale,
+        ...localeVoices,
+      ];
+
+      final chosen = candidates.firstOrNull;
       if (chosen is Map) {
-        _voiceUsed = '${chosen['name']} (${chosen['locale']})';
-        await _tts.setVoice({
-          'name': chosen['name'].toString(),
-          'locale': chosen['locale'].toString(),
-        });
+        final name = chosen['name'].toString();
+        final voiceLocale = chosen['locale'].toString();
+        _voiceUsed = '$name ($voiceLocale)';
+        await _tts.setVoice({'name': name, 'locale': voiceLocale});
       } else {
         _voiceUsed = '$locale default';
         await _tts.setLanguage(locale);

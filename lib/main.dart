@@ -80,6 +80,7 @@ class _ArifaHomeState extends State<ArifaHome>
   Timer? _moodTimer;
 
   AvatarMood _mood = AvatarMood.happy;
+  AvatarEffect _effect = AvatarEffect.none;
   String _caption = 'Jekhoni "Arifa" bolben ♥';
   bool _speaking = false;
   bool _listening = false;
@@ -165,11 +166,17 @@ class _ArifaHomeState extends State<ArifaHome>
     }
   }
 
-  void _setMood(AvatarMood mood, String caption, {Duration? autoReset}) {
+  void _setMood(
+    AvatarMood mood,
+    String caption, {
+    AvatarEffect effect = AvatarEffect.none,
+    Duration? autoReset,
+  }) {
     if (!mounted) return;
     _moodTimer?.cancel();
     setState(() {
       _mood = mood;
+      _effect = effect;
       _caption = caption;
     });
     if (autoReset != null) {
@@ -177,6 +184,7 @@ class _ArifaHomeState extends State<ArifaHome>
         if (!mounted || _busy || _speaking) return;
         setState(() {
           _mood = AvatarMood.happy;
+          _effect = AvatarEffect.none;
           _caption = 'Jekhoni "Arifa" bolben ♥';
         });
       });
@@ -185,6 +193,7 @@ class _ArifaHomeState extends State<ArifaHome>
 
   Future<void> _syncWakeService() async {
     final shouldRun = SettingsService.instance.wakeEnabled;
+    await _native.setWakeEnabled(shouldRun);
     final ok = shouldRun
         ? await _native.startWakeService()
         : await _native.stopWakeService();
@@ -258,6 +267,7 @@ class _ArifaHomeState extends State<ArifaHome>
 
   Future<void> _askPermissions() async {
     await [Permission.microphone, Permission.notification].request();
+    await _phone.requestPhonePermissions();
   }
 
   void _addArifa(String text, [List<CodeBlock> code = const []]) {
@@ -317,7 +327,7 @@ class _ArifaHomeState extends State<ArifaHome>
     }
 
     _setMood(AvatarMood.listening, 'Ji Emon Bhai ♥');
-    await _voice.speak('হ্যাঁ Emon Bhai, বলুন?');
+    await _voice.speak('Ji Emon Bhai');
     final started = await _voice.startListening(
       onResult: (text, finalResult) {
         if (!finalResult) return;
@@ -333,8 +343,9 @@ class _ArifaHomeState extends State<ArifaHome>
         'মাইক চালু হলো না। Settings-এ microphone permission দিও Emon Bhai।',
       );
       _setMood(
-        AvatarMood.error,
+        AvatarMood.sad,
         'Sorry Emon Bhai, ami thik kore dicchi',
+        effect: AvatarEffect.alert,
         autoReset: const Duration(seconds: 3),
       );
     }
@@ -369,6 +380,9 @@ class _ArifaHomeState extends State<ArifaHome>
         await _handleBuild(text);
       } else if (RegExp(r'setting|সেটিং').hasMatch(lower)) {
         await _openSettings();
+      } else if (RegExp(r'\bsms\b|\bএসএমএস\b', caseSensitive: false)
+          .hasMatch(lower)) {
+        await _handleSms(text);
       } else if (RegExp(r'whatsapp|হোয়াটসঅ্যাপ').hasMatch(lower)) {
         await _handleWhatsApp(text);
       } else if (RegExp(r'wifi|wi-fi|ওয়াইফাই|ওয়াইফাই').hasMatch(lower)) {
@@ -391,8 +405,9 @@ class _ArifaHomeState extends State<ArifaHome>
     } catch (e) {
       _addArifa('একটু সমস্যা হলো Emon Bhai: $e');
       _setMood(
-        AvatarMood.error,
+        AvatarMood.sad,
         'Sorry Emon Bhai, ami thik kore dicchi',
+        effect: AvatarEffect.alert,
         autoReset: const Duration(seconds: 4),
       );
       await _voice.speak('Sorry Emon Bhai, ami thik kore dicchi.');
@@ -424,8 +439,9 @@ class _ArifaHomeState extends State<ArifaHome>
   Future<void> _setWhatsAppAutoReply(bool on) async {
     await AutoReplyService.instance.setEnabled(on);
     _setMood(
-      on ? AvatarMood.success : AvatarMood.happy,
+      AvatarMood.happy,
       on ? 'WhatsApp Auto Reply ON ♥' : 'WhatsApp Auto Reply OFF',
+      effect: on ? AvatarEffect.celebrate : AvatarEffect.none,
       autoReset: const Duration(seconds: 2),
     );
     final line = on
@@ -446,8 +462,9 @@ class _ArifaHomeState extends State<ArifaHome>
         'আবার বলো "Arifa screen dekho"।',
       );
       _setMood(
-        AvatarMood.error,
+        AvatarMood.sad,
         'Sorry Emon Bhai, amar screen permission chai',
+        effect: AvatarEffect.alert,
         autoReset: const Duration(seconds: 4),
       );
       await _voice.speak('স্ক্রিন ক্যাপচার পারমিশন চাই Emon Bhai।');
@@ -457,7 +474,14 @@ class _ArifaHomeState extends State<ArifaHome>
     _addArifa(report.description);
     await _voice.speak(report.description);
 
-    if (report.hasError && _lastApp != null) {
+    if (report.hasError) {
+      if (_lastApp == null) {
+        await _handleBuild(
+          'Fix this code error and build the APK: '
+          '${report.detectedErrors.join('\n')}',
+        );
+        return;
+      }
       if (mounted) setState(() => _status = 'নিজে error ঠিক করছি...');
       try {
         final fixed = await _brain.fixFromScreen(
@@ -472,16 +496,18 @@ class _ArifaHomeState extends State<ArifaHome>
           fixed.files,
         );
         _setMood(
-          AvatarMood.success,
+          AvatarMood.happy,
           'Hoye geche! ♥',
+          effect: AvatarEffect.celebrate,
           autoReset: const Duration(seconds: 4),
         );
         await Share.shareXFiles([XFile(zip)], subject: 'ARIFA fixed source');
       } catch (e) {
         _addArifa('Auto-fix ব্যর্থ: $e');
         _setMood(
-          AvatarMood.error,
+          AvatarMood.sad,
           'Sorry Emon Bhai, ami thik kore dicchi',
+          effect: AvatarEffect.alert,
           autoReset: const Duration(seconds: 4),
         );
       }
@@ -500,23 +526,30 @@ class _ArifaHomeState extends State<ArifaHome>
   }
 
   Future<void> _finishSourceBuild(BuildResult result) async {
-    final msg =
-        'Hoye geche Emon Bhai ♥\n'
-        'কোড তৈরি + AI রিভিউ শেষ। Android ফোন নিজে APK build করতে পারে না, '
-        'তাই source zip দিচ্ছি। Termux/PC-তে চালাও:\n'
-        'flutter pub get\nflutter build apk --release\n\n'
-        '${result.zipPath}';
+    final built = result.success && result.apkPath != null;
+    final msg = built
+        ? 'Hoye geche Emon Bhai ♥\n'
+            'Flutter দিয়ে আসল APK build হয়ে গেছে (${result.attempts} চেষ্টায়)।\n'
+            '${result.apkPath}'
+        : 'Hoye geche Emon Bhai ♥\n'
+            'কোড তৈরি + AI রিভিউ শেষ, কিন্তু APK build হয়নি '
+            '(${result.flutterAvailable ? 'build fail' : 'Flutter SDK পাওয়া যায়নি'})। '
+            'সম্পূর্ণ source zip দিচ্ছি:\n'
+            '${result.zipPath}';
     _addArifa(msg, result.app.files);
     _setMood(
-      AvatarMood.success,
+      AvatarMood.happy,
       'Hoye geche! ♥',
+      effect: AvatarEffect.celebrate,
       autoReset: const Duration(seconds: 4),
     );
     await _voice.speak('Hoye geche Emon Bhai!');
     await _notifications.show(
       1001,
-      'ARIFA - Source Ready',
-      'Hoye geche Emon Bhai, source zip ready ♥',
+      built ? 'ARIFA - APK Ready' : 'ARIFA - Source Ready',
+      built
+          ? 'Hoye geche Emon Bhai, APK ready ♥'
+          : 'Hoye geche Emon Bhai, source zip ready ♥',
       const NotificationDetails(
         android: AndroidNotificationDetails(
           _channelId,
@@ -528,8 +561,8 @@ class _ArifaHomeState extends State<ArifaHome>
       ),
     );
     await Share.shareXFiles([
-      XFile(result.zipPath),
-    ], subject: 'ARIFA generated Flutter project');
+      XFile(built ? result.apkPath! : result.zipPath),
+    ], subject: built ? 'ARIFA APK' : 'ARIFA generated Flutter project');
   }
 
   Future<void> _handleWhatsApp(String text) async {
@@ -561,6 +594,25 @@ class _ArifaHomeState extends State<ArifaHome>
     await _voice.speak('WiFi সেটিংসে নিয়ে যাচ্ছি Emon Bhai।');
   }
 
+  Future<void> _handleSms(String text) async {
+    final m = RegExp(r'(\+?\d[\d\s-]{6,})\s*[:,-]?\s*(.+)').firstMatch(text);
+    if (m == null) {
+      _addArifa(
+        'নম্বর আর মেসেজ বলো Emon Bhai, যেমন: "Arifa sms 01712345678: kemon achos"।',
+      );
+      await _voice.speak('নম্বর আর মেসেজ বলো Emon Bhai।');
+      return;
+    }
+    final granted = await _phone.requestPhonePermissions();
+    if (!granted) {
+      _addArifa('SMS permission chai Emon Bhai — Settings e din.');
+      return;
+    }
+    final r = await _phone.sendSms(m.group(1)!.trim(), m.group(2)!.trim());
+    _addArifa('SMS পাঠাচ্ছি Emon Bhai। $r');
+    await _voice.speak('SMS পাঠাচ্ছি Emon Bhai।');
+  }
+
   Future<void> _handleCall(String text) async {
     final number =
         RegExp(r'(\+?\d[\d\s-]{6,})').firstMatch(text)?.group(1) ?? '';
@@ -569,9 +621,12 @@ class _ArifaHomeState extends State<ArifaHome>
       await _voice.speak('নম্বর বলো Emon Bhai।');
       return;
     }
-    final r = await _phone.dial(number);
-    _addArifa('নম্বর ডায়াল করছি Emon Bhai। $r');
-    await _voice.speak('ডায়াল করছি Emon Bhai।');
+    final granted = await _phone.requestPhonePermissions();
+    final r = granted ? await _phone.call(number) : await _phone.dial(number);
+    _addArifa(
+      granted ? 'কল করছি Emon Bhai। $r' : 'নম্বর ডায়াল করছি Emon Bhai। $r',
+    );
+    await _voice.speak(granted ? 'কল করছি Emon Bhai।' : 'ডায়াল করছি Emon Bhai।');
   }
 
   Future<void> _handleSong(String text) async {
@@ -604,7 +659,7 @@ class _ArifaHomeState extends State<ArifaHome>
       return;
     }
     _setMood(AvatarMood.listening, 'Ji Emon Bhai ♥');
-    await _voice.speak('হ্যাঁ Emon Bhai, বলুন?');
+    await _voice.speak('Ji Emon Bhai');
     final ok = await _voice.startListening(
       onResult: (text, finalResult) {
         if (!finalResult) return;
@@ -616,8 +671,9 @@ class _ArifaHomeState extends State<ArifaHome>
     if (mounted) setState(() => _listening = ok);
     if (!ok) {
       _setMood(
-        AvatarMood.error,
+        AvatarMood.sad,
         'Sorry Emon Bhai, ami thik kore dicchi',
+        effect: AvatarEffect.alert,
         autoReset: const Duration(seconds: 3),
       );
     }
@@ -689,6 +745,7 @@ class _ArifaHomeState extends State<ArifaHome>
                 const Spacer(),
                 ArifaAvatar(
                   mood: _mood,
+                  effect: _effect,
                   caption: _caption,
                   scale: MediaQuery.of(context).size.width < 360 ? 0.82 : 1,
                 ),

@@ -45,5 +45,8 @@ if [ -n "${PREFIX:-}" ] && [ -x "$PREFIX/bin/flutter" ]; then
   bash scripts/termux_config.sh
 fi
 
+# Launcher mipmaps must always come from assets/icon/arifa_icon.png.
+python3 scripts/generate_icon.py
+
 flutter pub get
 echo "ARIFA bootstrap complete. Open the app, enter keys in Settings, then run scripts/build_apk.sh."

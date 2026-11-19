@@ -53,6 +53,7 @@ class SettingsService {
   static const _kGemini = 'gemini_api_key';
   static const _kOpenRouter = 'openrouter_api_key';
   static const _kVoice = 'voice_choice';
+  static const _kVoiceName = 'tts_voice_name';
   static const _kWake = 'wake_enabled';
   static const _kOnboarded = 'setup_done';
   static const _kModels = 'model_catalog_v1';
@@ -73,6 +74,9 @@ class SettingsService {
   String geminiKey = '';
   String openRouterKey = '';
   VoiceChoice voice = VoiceChoice.banglaFemaleCute;
+
+  /// Exact TTS voice name nominated in Settings. Empty = choose automatically.
+  String ttsVoiceName = '';
   bool wakeEnabled = true;
   bool setupDone = false;
 
@@ -121,6 +125,7 @@ class SettingsService {
       (e) => e.name == values[_kVoice],
       orElse: () => VoiceChoice.banglaFemaleCute,
     );
+    ttsVoiceName = (values[_kVoiceName] ?? '').trim();
     wakeEnabled = values[_kWake] != 'false';
     setupDone = values[_kOnboarded] == 'true';
 
@@ -387,11 +392,19 @@ class SettingsService {
     }
   }
 
+  /// Persist an exact Android TTS voice name (empty clears the override).
+  Future<void> saveVoiceName(String name) async {
+    final clean = name.trim();
+    await _storage.write(key: _kVoiceName, value: clean);
+    ttsVoiceName = clean;
+  }
+
   Future<void> saveAll({
     required String gemini,
     required String openRouter,
     required VoiceChoice selectedVoice,
     required bool selectedWake,
+    String? selectedVoiceName,
     bool? whatsappAutoReplyEnabled,
     List<String>? whatsappAllow,
     List<String>? whatsappImportant,
@@ -410,6 +423,9 @@ class SettingsService {
     await _storage.write(key: _kVoice, value: selectedVoice.name);
     await _storage.write(key: _kWake, value: selectedWake.toString());
     await _storage.write(key: _kOnboarded, value: 'true');
+    if (selectedVoiceName != null) {
+      await saveVoiceName(selectedVoiceName);
+    }
 
     geminiKey = g;
     openRouterKey = o;

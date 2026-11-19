@@ -61,6 +61,10 @@ class ScreenService {
         detectedErrors: const [],
         modelUsed: 'local',
       );
+    } finally {
+      // The native side emits the path on the event channel for the UI too,
+      // but the cached JPEG must not linger after we have read it.
+      await native.clearScreenCapture();
     }
   }
 

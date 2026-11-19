@@ -52,6 +52,16 @@ class BackgroundService {
     }
   }
 
+  /// Mirrors the wake setting into native SharedPreferences so BootReceiver
+  /// can decide whether to start the foreground service after a reboot.
+  Future<void> setWakeEnabled(bool enabled) async {
+    try {
+      await _method.invokeMethod<bool>('setWakeEnabled', {'enabled': enabled});
+    } catch (_) {
+      // Older native builds simply ignore this; boot defaults to enabled.
+    }
+  }
+
   Future<bool> isServiceRunning() async {
     try {
       return await _method.invokeMethod<bool>('isServiceRunning') ?? false;
@@ -60,13 +70,24 @@ class BackgroundService {
     }
   }
 
-  /// Starts Android MediaProjection consent and returns captured JPEG path.
+  /// Starts Android MediaProjection consent and returns the real saved JPEG
+  /// path. The MethodChannel result stays pending until ArifaService has
+  /// actually written (and downscaled) the screenshot.
   Future<String?> captureScreen() async {
     try {
       return await _method.invokeMethod<String>('captureScreen');
     } on PlatformException catch (e) {
       _controller.add(WakeEvent(text: '[screen] ${e.message}', source: 'screen'));
       return null;
+    }
+  }
+
+  /// Deletes the cached screenshot once the caller has consumed its bytes.
+  Future<bool> clearScreenCapture() async {
+    try {
+      return await _method.invokeMethod<bool>('clearScreenCapture') ?? false;
+    } catch (_) {
+      return false;
     }
   }
 

@@ -84,7 +84,7 @@ class WhatsAppService {
     if (!openedChat) {
       await _method.invokeMethod<void>('openWhatsApp');
     }
-    await Future<void>.delayed(const Duration(milliseconds: 180));
+    await Future<void>.delayed(const Duration(milliseconds: 80));
 
     try {
       final result = await _method.invokeMethod<String>('typeWhatsAppReply', {
@@ -130,7 +130,9 @@ class WhatsAppService {
             'text': {'body': body},
           }),
         )
-        .timeout(const Duration(seconds: 4));
+        // Keep the whole reply inside the ~2s auto-reply budget. A slow cloud
+        // call falls back to the on-device accessibility sender.
+        .timeout(const Duration(milliseconds: 1200));
 
     if (res.statusCode >= 400) {
       throw Exception('Cloud API ${res.statusCode}: ${res.body}');
